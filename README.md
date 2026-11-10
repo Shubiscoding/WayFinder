@@ -47,7 +47,7 @@ Windows search is slow to open and slow to answer. WayFinder lives in the backgr
 
 ## Install
 
-1. Go to the [Releases page](https://github.com/YOUR-USERNAME/WayFinder/releases) <!-- TODO: fix link -->
+1. Go to the [Releases page]([https://github.com/Shubiscoding/WayFinder/releases/tag/v1.0.0]) <!-- TODO: fix link -->
 2. Download the latest `WayFinder_x.y.z_x64-setup.exe` <!-- TODO: match the real installer name -->
 3. Run the installer, then press **Ctrl+Space**.
 
