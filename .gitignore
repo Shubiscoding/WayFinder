@@ -1,0 +1,20 @@
+# WayFinder root .gitignore
+
+# Node / Vite
+node_modules/
+dist/
+
+# Rust build artifacts
+target/
+src-tauri/target/
+
+# SQLite artefacts
+src-tauri/data/index.db
+
+# Accidental SQLite shell output
+src-tauri/.tables
+
+# OS
+.DS_Store
+Thumbs.db
+

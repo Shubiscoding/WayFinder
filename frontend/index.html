@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>WayFinder</title>
+    <!--
+      Fonts are bundled locally in frontend/fonts/ — no network required.
+      Silkscreen is used for chip/badge labels; VT323 for body text.
+    -->
+    <link rel="stylesheet" href="style.css">
+    <script src="script.js" defer></script>
+</head>
+<body>
+    <main class="launcher">
+        <div class="search">
+            <span class="prompt">&gt;</span>
+            <div class="mode">
+                <button class="chip" id="chip" type="button"
+                        aria-haspopup="listbox" aria-expanded="false"></button>
+                <ul class="menu" id="menu" role="listbox" hidden></ul>
+            </div>
+            <input id="input" type="text" placeholder="type a command or search"
+                   autocomplete="off" spellcheck="false" autofocus>
+            <span class="to" id="to" hidden>to</span>
+            <input id="input2" type="text" autocomplete="off" spellcheck="false"
+                   aria-label="Convert to" hidden>
+        </div>
+        <ul class="results" id="results" role="listbox"></ul>
+        <footer>
+            <span class="keys">
+                <span><b>↑↓</b> move</span>
+                <span><b>enter</b> open</span>
+                <span><b>tab</b> switch</span>
+                <span><b>esc</b> clear</span>
+            </span>
+            <span class="status" id="status"></span>
+        </footer>
+    </main>
+
+    <!-- Error box — shown by showError() in script.js -->
+    <div class="error-box" id="error-box" role="alertdialog"
+         aria-modal="true" aria-labelledby="error-heading" tabindex="-1" hidden>
+        <p class="error-heading" id="error-heading">Something went wrong</p>
+        <p class="error-msg" id="error-msg"></p>
+        <button class="error-close" id="error-close" type="button">Close</button>
+    </div>
+</body>
+</html>
