@@ -167,7 +167,7 @@ pub fn index_tree(tx: &mut BatchTx, start: &Path, exclude_dirs: &[String]) -> u6
 /// crawl never panics.
 pub fn run_crawl(db_path: &Path, roots: &[PathBuf], exclude_dirs: &[String]) {
     if roots.is_empty() {
-        eprintln!("[crawler] No roots to index; crawl skipped.");
+        log::info!("[crawler] No roots to index; crawl skipped.");
         return;
     }
 
@@ -176,7 +176,7 @@ pub fn run_crawl(db_path: &Path, roots: &[PathBuf], exclude_dirs: &[String]) {
     let conn = match database::open(db_path) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("[crawler] Could not open the index database: {e}");
+            log::error!("[crawler] Could not open the index database: {e}");
             return;
         }
     };
@@ -185,7 +185,7 @@ pub fn run_crawl(db_path: &Path, roots: &[PathBuf], exclude_dirs: &[String]) {
     let mut count: u64 = 0;
 
     for root in roots {
-        eprintln!("[crawler] Indexing {:?} …", root);
+        log::info!("[crawler] Indexing {:?} …", root);
 
         let walker = WalkDir::new(root)
             .follow_links(false) // never follow symlinks / junctions
@@ -196,7 +196,7 @@ pub fn run_crawl(db_path: &Path, roots: &[PathBuf], exclude_dirs: &[String]) {
                 Ok(e) => e,
                 Err(e) => {
                     // Permission denied and similar — log and continue.
-                    eprintln!("[crawler] Skipping: {e}");
+                    log::debug!("[crawler] Skipping: {e}");
                     continue;
                 }
             };
@@ -234,7 +234,7 @@ pub fn run_crawl(db_path: &Path, roots: &[PathBuf], exclude_dirs: &[String]) {
             };
 
             if let Err(e) = database::insert_entry(tx.conn(), &file_entry) {
-                eprintln!("[crawler] Insert error: {e}");
+                log::error!("[crawler] Insert error: {e}");
             } else {
                 tx.tick();
                 count += 1;
@@ -243,5 +243,5 @@ pub fn run_crawl(db_path: &Path, roots: &[PathBuf], exclude_dirs: &[String]) {
     }
 
     tx.finish();
-    eprintln!("[crawler] Done. Indexed {count} entries.");
+    log::info!("[crawler] Done. Indexed {count} entries.");
 }

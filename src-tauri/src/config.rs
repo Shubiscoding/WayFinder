@@ -1,3 +1,4 @@
+
 // config.rs — User configuration for WayFinder.
 //
 // All user-editable settings live in ONE file in the app-data directory:
@@ -32,6 +33,7 @@ pub struct Config {
     pub index_roots: Vec<String>,
     pub exclude_dirs: Vec<String>,
     pub hide_on_blur: bool,
+    pub autostart: bool,
 }
 
 impl Default for Config {
@@ -42,6 +44,7 @@ impl Default for Config {
             index_roots: vec![], // resolved to home dir at runtime when empty
             exclude_dirs: vec!["node_modules".to_string(), ".git".to_string()],
             hide_on_blur: true,
+            autostart: false,
         }
     }
 }
@@ -132,7 +135,7 @@ pub fn resolved_roots(cfg: &Config) -> Vec<PathBuf> {
     match dirs::home_dir() {
         Some(h) => vec![h],
         None => {
-            eprintln!("[config] Could not resolve home directory; no roots to index.");
+            log::warn!("[config] Could not resolve home directory; no roots to index.");
             vec![]
         }
     }

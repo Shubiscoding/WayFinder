@@ -21,7 +21,7 @@ fn run_watcher(db_path: &Path, roots: &[PathBuf], exclude_dirs: &[String]) {
     let conn = match database::open(db_path) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("[watcher] Could not open database connection: {e}");
+            log::error!("[watcher] Could not open database connection: {e}");
             return;
         }
     };
@@ -30,7 +30,7 @@ fn run_watcher(db_path: &Path, roots: &[PathBuf], exclude_dirs: &[String]) {
     let mut debouncer = match new_debouncer(Duration::from_millis(500), tx) {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("[watcher] Could not initialize filesystem debouncer: {e}");
+            log::error!("[watcher] Could not initialize filesystem debouncer: {e}");
             return;
         }
     };
@@ -38,9 +38,9 @@ fn run_watcher(db_path: &Path, roots: &[PathBuf], exclude_dirs: &[String]) {
     for root in roots {
         if root.exists() {
             if let Err(e) = debouncer.watcher().watch(root, RecursiveMode::Recursive) {
-                eprintln!("[watcher] Could not watch {}: {e}", root.display());
+                log::warn!("[watcher] Could not watch {}: {e}", root.display());
             } else {
-                eprintln!("[watcher] Watching {} for changes", root.display());
+                log::info!("[watcher] Watching {} for changes", root.display());
             }
         }
     }
@@ -55,14 +55,22 @@ fn run_watcher(db_path: &Path, roots: &[PathBuf], exclude_dirs: &[String]) {
                 }
                 batch.finish();
             }
-            Err(e) => eprintln!("[watcher] Watch error: {e:?}"),
+            Err(e) => log::error!("[watcher] Watch error: {e:?}"),
         }
     }
 }
 
-fn remove_subtree(tx: &mut BatchTx, path_str: &str) {
+fn remove_subtree(tx: &mut BatchTx, path_str: &str, is_dir: bool) {
+    // Only query/delete if the path actually exists in the index.
+    // This avoids thousands of useless LIKE queries and lock contention
+    // for files in hidden/excluded trees (e.g. AppData, .git, temp files).
+    if !database::is_indexed(tx.conn(), path_str) {
+        return;
+    }
     let _ = database::delete_by_path(tx.conn(), path_str);
-    let _ = database::delete_by_path_prefix(tx.conn(), path_str);
+    if is_dir {
+        let _ = database::delete_by_path_prefix(tx.conn(), path_str);
+    }
     tx.tick();
 }
 
@@ -83,7 +91,11 @@ fn handle_path_change(
     let meta = match std::fs::symlink_metadata(path) {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            remove_subtree(tx, &path_str); // deleted or renamed away
+            if database::is_indexed(tx.conn(), &path_str) {
+                let _ = database::delete_by_path(tx.conn(), &path_str);
+                let _ = database::delete_by_path_prefix(tx.conn(), &path_str);
+                tx.tick();
+            }
             return;
         }
         Err(_) => return, // permission etc.: leave the index untouched
@@ -94,7 +106,8 @@ fn handle_path_change(
         || crawler::is_hidden_in_roots(path, roots)
     {
         // Previously indexed but now hidden/excluded: drop it.
-        remove_subtree(tx, &path_str);
+        // If it was never indexed (e.g. EBWebView/AppData), do nothing.
+        remove_subtree(tx, &path_str, is_dir);
         return;
     }
 
@@ -124,6 +137,6 @@ fn handle_path_change(
     };
     match database::upsert_entry(tx.conn(), &entry) {
         Ok(()) => tx.tick(),
-        Err(e) => eprintln!("[watcher] Upsert error for {path_str}: {e}"),
+        Err(e) => log::error!("[watcher] Upsert error for {path_str}: {e}"),
     }
 }

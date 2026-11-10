@@ -9,7 +9,7 @@
       Silkscreen is used for chip/badge labels; VT323 for body text.
     -->
     <link rel="stylesheet" href="style.css">
-    <script src="script.js" defer></script>
+    <script type="module" src="script.js"></script>
 </head>
 <body>
     <main class="launcher">
@@ -44,6 +44,24 @@
         <p class="error-heading" id="error-heading">Something went wrong</p>
         <p class="error-msg" id="error-msg"></p>
         <button class="error-close" id="error-close" type="button">Close</button>
+    </div>
+
+    <!-- Settings modal — shown by openSettings() in script.js (Phase 5.5.5) -->
+    <div class="settings-box" id="settings-box" role="dialog"
+         aria-modal="true" aria-labelledby="settings-heading" tabindex="-1" hidden>
+        <div class="settings-content">
+            <div class="settings-header">
+                <span class="settings-heading" id="settings-heading">Settings (read-only)</span>
+                <span class="settings-sub">Restart WayFinder to apply changes</span>
+            </div>
+            <p class="settings-path" id="settings-path"></p>
+            <p class="settings-error" id="settings-error" hidden></p>
+            <pre class="settings-json" id="settings-json"></pre>
+            <div class="settings-actions">
+                <button class="settings-btn" id="settings-open" type="button">Open file</button>
+                <button class="settings-btn secondary" id="settings-close" type="button">Close</button>
+            </div>
+        </div>
     </div>
 </body>
 </html>

@@ -342,3 +342,123 @@ footer b {
     border: 0;
     cursor: pointer;
 }
+
+/* ── Settings modal (Phase 5.5.5) ── */
+.settings-box {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: rgba(13, 17, 8, 0.94);
+    z-index: 100;
+    padding: 24px;
+}
+
+.settings-box[hidden] {
+    display: none;
+}
+
+.settings-content {
+    width: 620px;
+    max-height: 500px;
+    background: var(--bg);
+    border: 2px solid var(--lime);
+    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.8);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 20px;
+    box-sizing: border-box;
+}
+
+.settings-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    border-bottom: 1px solid var(--line);
+    padding-bottom: 8px;
+}
+
+.settings-heading {
+    font: 18px var(--pixel);
+    color: var(--lime);
+    letter-spacing: 0.5px;
+}
+
+.settings-sub {
+    font-size: 14px;
+    color: var(--muted);
+    font-family: var(--pixel);
+}
+
+.settings-path {
+    font-size: 13px;
+    font-family: var(--pixel);
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin: 0;
+}
+
+.settings-error {
+    font-size: 14px;
+    color: #ff6b6b;
+    background: rgba(255, 107, 107, 0.1);
+    border: 1px solid #ff6b6b;
+    padding: 6px 10px;
+    margin: 0;
+}
+
+.settings-error[hidden] {
+    display: none;
+}
+
+.settings-json {
+    margin: 0;
+    padding: 12px;
+    font-size: 14px;
+    line-height: 1.4;
+    color: var(--text);
+    background: rgba(0, 0, 0, 0.4);
+    border: 1px solid var(--line);
+    max-height: 240px;
+    overflow-y: auto;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+    font-family: Consolas, monospace;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+.settings-json::-webkit-scrollbar {
+    display: none;
+}
+
+.settings-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+    padding-top: 4px;
+}
+
+.settings-btn {
+    padding: 6px 20px;
+    font: 14px var(--pixel);
+    color: var(--bg);
+    background: var(--lime);
+    border: 0;
+    cursor: pointer;
+}
+
+.settings-btn.secondary {
+    background: transparent;
+    color: var(--lime);
+    border: 1px solid var(--lime);
+}
+
+.settings-btn:hover {
+    filter: brightness(1.15);
+}

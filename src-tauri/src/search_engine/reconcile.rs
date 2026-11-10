@@ -53,11 +53,11 @@ pub fn run_startup_reconcile(db_path: &Path, roots: &[PathBuf], exclude_dirs: &[
     let conn = match database::open(db_path) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("[reconcile] Could not open database: {e}");
+            log::error!("[reconcile] Could not open database: {e}");
             return;
         }
     };
-    eprintln!("[reconcile] Starting startup reconcile …");
+    log::info!("[reconcile] Starting startup reconcile …");
     let live = root_status(roots);
 
     // 1. Load what the index knows.
@@ -66,7 +66,7 @@ pub fn run_startup_reconcile(db_path: &Path, roots: &[PathBuf], exclude_dirs: &[
         let mut stmt = match conn.prepare("SELECT path, modified_at FROM files") {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("[reconcile] Could not query files: {e}");
+                log::error!("[reconcile] Could not query files: {e}");
                 return;
             }
         };
@@ -92,7 +92,7 @@ pub fn run_startup_reconcile(db_path: &Path, roots: &[PathBuf], exclude_dirs: &[
     }
     for chunk in stale.chunks(500) {
         if let Err(e) = database::delete_missing(&conn, chunk) {
-            eprintln!("[reconcile] Error purging missing paths: {e}");
+            log::error!("[reconcile] Error purging missing paths: {e}");
         }
     }
 
@@ -154,7 +154,7 @@ pub fn run_startup_reconcile(db_path: &Path, roots: &[PathBuf], exclude_dirs: &[
         }
     }
     tx.finish();
-    eprintln!(
+    log::info!(
         "[reconcile] Startup reconcile complete: removed {}, updated {updated} items.",
         stale.len()
     );

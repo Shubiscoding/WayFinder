@@ -18,3 +18,9 @@ src-tauri/.tables
 .DS_Store
 Thumbs.db
 
+# Environment files
+.env
+.env.*
+
+# Logs
+.log

@@ -22,9 +22,34 @@ use rusqlite::Connection;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, State};
+use tauri_plugin_autostart::ManagerExt as AutostartManagerExt;
 use tauri_plugin_global_shortcut::ShortcutState;
 use tauri_plugin_opener::OpenerExt;
+
+// ---------------------------------------------------------------------------
+// Shared state
+// ---------------------------------------------------------------------------
+
+/// Guard used by hide-on-blur: ignores blur events fired within 150 ms of show.
+struct LastShown(Arc<Mutex<Instant>>);
+
+/// Single unified launcher activation path.
+/// Records last_shown timestamp, unhides window, requests OS focus, and notifies frontend.
+pub fn show_launcher(app: &tauri::AppHandle) {
+    if let Some(state) = app.try_state::<LastShown>() {
+        if let Ok(mut t) = state.0.lock() {
+            *t = Instant::now();
+        }
+    }
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+        let _ = app.emit("launcher-shown", ());
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Shared state
@@ -163,6 +188,65 @@ fn convert_file(
     converter::convert_resolved(&source_path, &target_ext)
 }
 
+/// Terminate the application process cleanly, closing all windows and child processes.
+#[tauri::command]
+fn quit_app(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
+#[derive(serde::Serialize)]
+struct ConfigInfo {
+    path: String,
+    raw_json: String,
+    error: Option<String>,
+}
+
+/// Return the raw JSON, path, and parse error (if any) of config.json for the settings view.
+#[tauri::command(async)]
+fn get_config(app: tauri::AppHandle) -> Result<ConfigInfo, String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Could not get app data folder: {e}"))?;
+    let path = data_dir.join("config.json");
+    let path_str = path.to_string_lossy().to_string();
+
+    let raw_json = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            serde_json::to_string_pretty(&Config::default()).unwrap_or_default()
+        }
+        Err(e) => return Err(format!("Could not read {}: {e}", path.display())),
+    };
+
+    let parse_error = match serde_json::from_str::<Config>(&raw_json) {
+        Ok(_) => None,
+        Err(e) => Some(format!("JSON syntax error: {e}")),
+    };
+
+    Ok(ConfigInfo {
+        path: path_str,
+        raw_json,
+        error: parse_error,
+    })
+}
+
+/// Open config.json in the user's default text editor.
+///
+/// Bypasses the search-engine index constraint enforced by `open_path`.
+#[tauri::command(async)]
+fn open_config(app: tauri::AppHandle) -> Result<(), String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Could not get app data folder: {e}"))?;
+    let path = data_dir.join("config.json");
+    let path_str = path.to_string_lossy().to_string();
+    app.opener()
+        .open_path(path_str.clone(), None::<&str>)
+        .map_err(|e| format!("Could not open config file: {e}"))
+}
+
 // ---------------------------------------------------------------------------
 // App setup
 // ---------------------------------------------------------------------------
@@ -175,13 +259,26 @@ fn main() {
     let last_shown: Arc<Mutex<Instant>> = Arc::new(Mutex::new(
         Instant::now() - std::time::Duration::from_secs(1),
     ));
-    // Clone shared into the shortcut handler (runs before setup).
-    let last_shown_shortcut = Arc::clone(&last_shown);
-    // Clone shared into setup (for the window-event handler).
-    let last_shown_setup = Arc::clone(&last_shown);
+    let last_shown_blur = Arc::clone(&last_shown);
 
     tauri::Builder::default()
+        // Single instance plugin must be registered FIRST (Phase 5.5.3).
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            show_launcher(app);
+        }))
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .level(log::LevelFilter::Info)
+                .level_for("notify", log::LevelFilter::Warn)
+                .level_for("notify_debouncer_mini", log::LevelFilter::Warn)
+                .build(),
+        )
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--autostart"]),
+        ))
         .plugin(tauri_plugin_opener::init())
+        .manage(LastShown(last_shown))
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, _shortcut, event| {
@@ -195,13 +292,7 @@ fn main() {
                         if visible && focused {
                             let _ = window.hide();
                         } else {
-                            // Record BEFORE showing so the blur guard cannot race us.
-                            if let Ok(mut t) = last_shown_shortcut.lock() {
-                                *t = Instant::now();
-                            }
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                            let _ = app.emit("launcher-shown", ());
+                            show_launcher(app);
                         }
                     }
                 })
@@ -224,10 +315,68 @@ fn main() {
                     "Could not register the hotkey \"{}\": {e}. Another program may be using it.",
                     cfg.hotkey
                 );
-                eprintln!("[main] {msg}");
+                log::warn!("[main] {msg}");
                 warning.get_or_insert(msg);
             }
             app.manage(StartupWarning(Mutex::new(warning)));
+
+            // ── System Tray Icon (Phase 5.5.2 & 5.5.5) ─────────────────────
+            let show_i = MenuItem::with_id(app, "show", "Show WayFinder", true, None::<&str>)?;
+            let settings_i = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
+            let quit_i = MenuItem::with_id(app, "quit", "Quit WayFinder", true, None::<&str>)?;
+            let tray_menu = Menu::with_items(app, &[&show_i, &settings_i, &quit_i])?;
+
+            if let Some(icon) = app.default_window_icon() {
+                let _tray = TrayIconBuilder::new()
+                    .icon(icon.clone())
+                    .menu(&tray_menu)
+                    .show_menu_on_left_click(false)
+                    .on_menu_event(|app, event| match event.id.as_ref() {
+                        "show" => {
+                            show_launcher(app);
+                        }
+                        "settings" => {
+                            show_launcher(app);
+                            let _ = app.emit("open-settings", ());
+                        }
+                        "quit" => {
+                            app.exit(0);
+                        }
+                        _ => {}
+                    })
+                    .on_tray_icon_event(|tray, event| {
+                        if let TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            ..
+                        } = event
+                        {
+                            let app = tray.app_handle();
+                            show_launcher(app);
+                        }
+                    })
+                    .build(app)?;
+            } else {
+                log::warn!("[main] No window icon found; system tray icon was not created.");
+            }
+
+            // ── Autostart OS sync (Phase 5.5.4) ────────────────────────────
+            let autostart_mgr = app.autolaunch();
+            let is_enabled = autostart_mgr.is_enabled().unwrap_or(false);
+            if cfg.autostart && !is_enabled {
+                if let Err(e) = autostart_mgr.enable() {
+                    log::error!("[main] Could not enable autostart in OS: {e}");
+                } else {
+                    log::info!("[main] Autostart enabled in OS.");
+                }
+            } else if !cfg.autostart && is_enabled {
+                if let Err(e) = autostart_mgr.disable() {
+                    log::error!("[main] Could not disable autostart in OS: {e}");
+                } else {
+                    log::info!("[main] Autostart disabled in OS.");
+                }
+            }
+            let is_autostart_launch = std::env::args().any(|arg| arg == "--autostart");
 
             let exclude_dirs = cfg.exclude_dirs.clone();
             let index_roots = config::resolved_roots(&cfg);
@@ -264,7 +413,7 @@ fn main() {
             // of Windows fire Focused(false) immediately after show()).
             if hide_on_blur {
                 let app_h = app.handle().clone();
-                let ls = Arc::clone(&last_shown_setup);
+                let ls = Arc::clone(&last_shown_blur);
                 if let Some(win) = app.get_webview_window("main") {
                     win.on_window_event(move |event| {
                         if let tauri::WindowEvent::Focused(false) = event {
@@ -278,7 +427,7 @@ fn main() {
                             }
                             if let Some(w) = app_h.get_webview_window("main") {
                                 if let Err(e) = w.hide() {
-                                    eprintln!(
+                                    log::error!(
                                         "[main] Could not hide window on focus loss: {e}"
                                     );
                                 }
@@ -298,6 +447,11 @@ fn main() {
             let done_bg = Arc::clone(&crawl_done);
 
             std::thread::spawn(move || {
+                // When launched via OS autostart, delay background work to avoid disk contention.
+                if is_autostart_launch {
+                    log::info!("[main] Launched via autostart; delaying background reconcile by 30 seconds.");
+                    std::thread::sleep(std::time::Duration::from_secs(30));
+                }
                 if needs_crawl {
                     crawler::run_crawl(&db_path_bg, &index_roots_bg, &exclude_dirs_bg);
                 } else {
@@ -323,6 +477,9 @@ fn main() {
             open_path,
             open_url,
             convert_file,
+            quit_app,
+            get_config,
+            open_config,
         ])
         .run(tauri::generate_context!())
         .expect("WayFinder failed to start");

@@ -27,7 +27,7 @@ pub struct FileEntry {
 pub fn open(db_path: &Path) -> Result<Connection> {
     let conn = Connection::open(db_path)?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
-    conn.busy_timeout(Duration::from_secs(5))?;
+    conn.busy_timeout(Duration::from_secs(15))?;
     Ok(conn)
 }
 

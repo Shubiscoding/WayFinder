@@ -50,6 +50,12 @@ const COMMANDS = {
         empty: 'Type to search',
         search: searchWeb,
     },
+    sys: {
+        hint: 'System commands',
+        placeholder: 'quit, settings...',
+        empty: 'No matching commands',
+        search: searchSys,
+    },
 };
 
 // ---------------------------------------------------------------------------
@@ -69,6 +75,14 @@ const status   = document.getElementById('status');
 const errorBox = document.getElementById('error-box');
 const errorMsg = document.getElementById('error-msg');
 const errorClose = document.getElementById('error-close');
+
+// Settings modal DOM references (Phase 5.5.5)
+const settingsBox   = document.getElementById('settings-box');
+const settingsPath  = document.getElementById('settings-path');
+const settingsError = document.getElementById('settings-error');
+const settingsJson  = document.getElementById('settings-json');
+const settingsOpen  = document.getElementById('settings-open');
+const settingsClose = document.getElementById('settings-close');
 
 let mode        = 'fil';
 let menuIndex   = 0;
@@ -107,6 +121,46 @@ errorBox.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
         errorBox.hidden = true;
         input.focus();
+    }
+});
+
+// ---------------------------------------------------------------------------
+// Settings modal (Phase 5.5.5)
+// ---------------------------------------------------------------------------
+
+async function openSettings() {
+    try {
+        const info = await invoke('get_config');
+        settingsPath.textContent = info.path;
+        settingsJson.textContent = info.raw_json;
+        if (info.error) {
+            settingsError.textContent = info.error;
+            settingsError.hidden = false;
+        } else {
+            settingsError.textContent = '';
+            settingsError.hidden = true;
+        }
+        settingsBox.hidden = false;
+        settingsBox.focus();
+    } catch (err) {
+        showError(`Could not load settings: ${err}`);
+    }
+}
+
+function closeSettings() {
+    settingsBox.hidden = true;
+    input.focus();
+}
+
+settingsOpen?.addEventListener('click', () => {
+    invoke('open_config').catch((err) => showError(String(err)));
+});
+
+settingsClose?.addEventListener('click', closeSettings);
+
+settingsBox?.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+        closeSettings();
     }
 });
 
@@ -295,6 +349,30 @@ function searchWeb(query) {
     }];
 }
 
+/** System commands: Settings, Quit WayFinder (Phase 5.5.2 & 5.5.5). */
+function searchSys(query) {
+    const q = (query || '').trim().toLowerCase();
+    const actions = [
+        {
+            tag: 'sys',
+            title: 'Settings',
+            sub: 'View configuration (read-only)',
+            run: () => openSettings(),
+        },
+        {
+            tag: 'sys',
+            title: 'Quit WayFinder',
+            sub: 'Exit the application completely',
+            run: () => invoke('quit_app'),
+        },
+    ];
+
+    if (!q) return actions;
+    return actions.filter(
+        (a) => a.title.toLowerCase().includes(q) || a.sub.toLowerCase().includes(q)
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Mode switching
 // ---------------------------------------------------------------------------
@@ -458,6 +536,13 @@ function buildMenu() {
 
 function onKeydown(e) {
     if (e.isComposing) return; // Japanese/Chinese/Korean IME confirmation
+    if (settingsBox && !settingsBox.hidden) {
+        if (e.key === 'Escape') {
+            closeSettings();
+            e.preventDefault();
+            return;
+        }
+    }
     const menuOpen = !menu.hidden;
     const step = e.key === 'ArrowDown' ? 1 : e.key === 'ArrowUp' ? -1 : 0;
 
@@ -580,11 +665,12 @@ launcher.addEventListener('animationend', (e) => {
 });
 
 // Click outside the panel → dismiss.
-// Treat the error box as "inside" — clicking it must not close the launcher.
+// Treat the error box and settings modal as "inside" — clicking them must not close the launcher.
 document.addEventListener('mousedown', (e) => {
     if (!launcher.hidden
         && !launcher.contains(e.target)
-        && !errorBox.contains(e.target)) {
+        && !errorBox.contains(e.target)
+        && (!settingsBox || !settingsBox.contains(e.target))) {
         dismissLauncher();
     }
 });
@@ -600,9 +686,12 @@ function resetLauncher() {
     input.focus();
 }
 
-// Rust emits this when the hotkey shows the window.
+// Rust emits this when the hotkey shows the window or tray requests settings.
 const tauriListen = window.__TAURI__?.event?.listen;
-if (tauriListen) tauriListen('launcher-shown', resetLauncher);
+if (tauriListen) {
+    tauriListen('launcher-shown', resetLauncher);
+    tauriListen('open-settings', openSettings);
+}
 
 // ---------------------------------------------------------------------------
 // Indexing state polling
