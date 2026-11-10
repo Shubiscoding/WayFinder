@@ -147,7 +147,6 @@ You will need:
 - The [Tauri prerequisites for Windows](https://v2.tauri.app/start/prerequisites/): Microsoft C++ Build Tools and WebView2
 
 ```powershell
-git clone https://github.com/YOUR-USERNAME/WayFinder.git   # TODO: fix link
 cd WayFinder
 npm install
 
