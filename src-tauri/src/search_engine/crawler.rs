@@ -163,23 +163,26 @@ pub fn index_tree(tx: &mut BatchTx, start: &Path, exclude_dirs: &[String]) -> u6
 /// Walk `roots`, inserting every visible file and directory into the database.
 /// All inserts are wrapped in batch transactions for performance.
 ///
-/// Errors from individual entries are logged to stderr and skipped — the
-/// crawl never panics.
-pub fn run_crawl(db_path: &Path, roots: &[PathBuf], exclude_dirs: &[String]) {
+/// Periodically reports the number of inserted files via `on_progress`.
+/// Errors from individual entries are logged and skipped — the crawl never panics.
+pub fn run_crawl<F>(
+    db_path: &Path,
+    roots: &[PathBuf],
+    exclude_dirs: &[String],
+    mut on_progress: F,
+) -> Result<(), String>
+where
+    F: FnMut(u64),
+{
     if roots.is_empty() {
         log::info!("[crawler] No roots to index; crawl skipped.");
-        return;
+        return Ok(());
     }
 
     // The crawler gets its OWN connection. Sharing the app's connection
     // would lock out every search until the crawl finished (the freeze).
-    let conn = match database::open(db_path) {
-        Ok(c) => c,
-        Err(e) => {
-            log::error!("[crawler] Could not open the index database: {e}");
-            return;
-        }
-    };
+    let conn = database::open(db_path)
+        .map_err(|e| format!("Could not open the index database: {e}"))?;
 
     let mut tx = BatchTx::new(&conn);
     let mut count: u64 = 0;
@@ -238,10 +241,49 @@ pub fn run_crawl(db_path: &Path, roots: &[PathBuf], exclude_dirs: &[String]) {
             } else {
                 tx.tick();
                 count += 1;
+                if count.is_multiple_of(50) {
+                    on_progress(count);
+                }
             }
         }
     }
 
     tx.finish();
+    on_progress(count);
     log::info!("[crawler] Done. Indexed {count} entries.");
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_crawler_progress_reporting() {
+        let base_dir = std::env::temp_dir().join(format!("wf_test_crawl_{}", std::process::id()));
+        let scan_dir = base_dir.join("to_scan");
+        let db_dir = base_dir.join("db_storage");
+        let _ = fs::create_dir_all(&scan_dir);
+        let _ = fs::create_dir_all(&db_dir);
+
+        let sample_file = scan_dir.join("sample.txt");
+        let _ = fs::write(&sample_file, "hello");
+        let db_path = db_dir.join("crawl_test.db");
+
+        let conn = database::open(&db_path).expect("open db");
+        database::create_table(&conn).expect("create table");
+        drop(conn);
+
+        let mut counts = Vec::new();
+        let res = run_crawl(&db_path, &[scan_dir], &[], |count| {
+            counts.push(count);
+        });
+
+        assert!(res.is_ok());
+        assert!(!counts.is_empty(), "Progress callback should be called at least at completion");
+        assert_eq!(*counts.last().unwrap(), 1);
+
+        let _ = fs::remove_dir_all(&base_dir);
+    }
 }

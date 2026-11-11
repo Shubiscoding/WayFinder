@@ -50,12 +50,10 @@ pub fn convert_image(source: &Path, destination: &Path) -> Result<(), String> {
         }
     };
 
-    if let Some(parent) = destination.parent() {
-        if !parent.as_os_str().is_empty() && !parent.exists() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                format!("Could not create folder \"{}\": {e}. Check folder permissions.", parent.display())
-            })?;
-        }
+    if let Some(parent) = destination.parent().filter(|p| !p.as_os_str().is_empty() && !p.exists()) {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            format!("Could not create folder \"{}\": {e}. Check folder permissions.", parent.display())
+        })?;
     }
 
     // Hand each encoder a colour type it actually supports.

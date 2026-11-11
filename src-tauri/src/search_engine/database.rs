@@ -176,9 +176,9 @@ pub fn is_indexed(conn: &Connection, path: &str) -> bool {
 pub fn children_of(conn: &Connection, folder: &str) -> HashSet<String> {
     let mut out = HashSet::new();
     if let Ok(mut stmt) = conn.prepare_cached("SELECT path FROM files WHERE parent = ?1") {
-        if let Ok(rows) = stmt.query_map([folder], |r| r.get::<_, String>(0)) {
+        let _ = stmt.query_map([folder], |r| r.get::<_, String>(0)).map(|rows| {
             out.extend(rows.flatten());
-        }
+        });
     }
     out
 }

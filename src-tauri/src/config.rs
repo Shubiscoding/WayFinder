@@ -10,7 +10,7 @@
 // The `version` field lets us upgrade old files in the future.
 
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
 // Config version
@@ -54,7 +54,7 @@ impl Default for Config {
 // ---------------------------------------------------------------------------
 
 /// Load config from `config.json` in `dir`. Returns the config and any optional warning.
-pub fn load(dir: &PathBuf) -> (Config, Option<String>) {
+pub fn load(dir: &Path) -> (Config, Option<String>) {
     let path = dir.join("config.json");
 
     let text = match std::fs::read_to_string(&path) {
@@ -97,7 +97,7 @@ pub fn load(dir: &PathBuf) -> (Config, Option<String>) {
 }
 
 /// Write `config.json` to `dir`, pretty-printed for human readability.
-pub fn save(dir: &PathBuf, cfg: &Config) -> Result<(), String> {
+pub fn save(dir: &Path, cfg: &Config) -> Result<(), String> {
     let path = dir.join("config.json");
     let text = serde_json::to_string_pretty(cfg)
         .map_err(|e| format!("Could not serialise config: {e}"))?;

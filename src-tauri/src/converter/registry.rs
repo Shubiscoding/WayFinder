@@ -60,3 +60,28 @@ pub fn is_supported(from_ext: &str, to_ext: &str) -> bool {
     find_converter(from_ext, to_ext).is_some()
 }
 
+/// All extensions supported as conversion sources (lowercase, without dot).
+pub fn supported_source_extensions() -> &'static [&'static str] {
+    &["png", "jpg", "jpeg", "jfif", "webp", "bmp", "tiff", "tif"]
+}
+
+/// Supported target extensions for a given source extension.
+pub fn conversion_targets(from_ext: &str) -> Vec<&'static str> {
+    let from_clean = from_ext.trim_start_matches('.').to_ascii_lowercase();
+    let mut targets = Vec::new();
+    for entry in CONVERTERS {
+        if entry
+            .from_extensions
+            .iter()
+            .any(|&e| e.eq_ignore_ascii_case(&from_clean))
+        {
+            for &t in entry.to_extensions {
+                if !targets.contains(&t) {
+                    targets.push(t);
+                }
+            }
+        }
+    }
+    targets
+}
+

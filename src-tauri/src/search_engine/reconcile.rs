@@ -46,36 +46,46 @@ fn is_not_found(path: &Path) -> bool {
 // Startup reconcile
 // ---------------------------------------------------------------------------
 
-pub fn run_startup_reconcile(db_path: &Path, roots: &[PathBuf], exclude_dirs: &[String]) {
+pub fn run_startup_reconcile<F>(
+    db_path: &Path,
+    roots: &[PathBuf],
+    exclude_dirs: &[String],
+    mut on_progress: F,
+) -> Result<(), String>
+where
+    F: FnMut(u64, u64),
+{
     if roots.is_empty() {
-        return; // never purge the index just because roots failed to resolve
+        return Ok(()); // never purge the index just because roots failed to resolve
     }
-    let conn = match database::open(db_path) {
-        Ok(c) => c,
-        Err(e) => {
-            log::error!("[reconcile] Could not open database: {e}");
-            return;
-        }
-    };
+    let conn = database::open(db_path)
+        .map_err(|e| format!("Could not open database: {e}"))?;
+
     log::info!("[reconcile] Starting startup reconcile …");
     let live = root_status(roots);
+
+    // Read total row count once at the start:
+    let total_rows: u64 = conn
+        .query_row("SELECT COUNT(*) FROM files", [], |r| r.get::<_, i64>(0))
+        .unwrap_or(0)
+        .max(0) as u64;
+
+    on_progress(0, total_rows);
 
     // 1. Load what the index knows.
     let mut known: HashMap<String, Option<i64>> = HashMap::new();
     {
-        let mut stmt = match conn.prepare("SELECT path, modified_at FROM files") {
-            Ok(s) => s,
-            Err(e) => {
-                log::error!("[reconcile] Could not query files: {e}");
-                return;
-            }
-        };
+        let mut stmt = conn
+            .prepare("SELECT path, modified_at FROM files")
+            .map_err(|e| format!("Could not query files: {e}"))?;
         if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?))) {
             for (p, m) in rows.flatten() {
                 known.insert(p, m);
             }
         }
     }
+
+    let mut processed: u64 = 0;
 
     // 2. Purge rows that are really gone.
     let mut stale: Vec<String> = Vec::new();
@@ -88,6 +98,10 @@ pub fn run_startup_reconcile(db_path: &Path, roots: &[PathBuf], exclude_dirs: &[
                     stale.push(p.clone());
                 }
             }
+        }
+        processed += 1;
+        if processed.is_multiple_of(50) {
+            on_progress(processed, total_rows);
         }
     }
     for chunk in stale.chunks(500) {
@@ -120,6 +134,10 @@ pub fn run_startup_reconcile(db_path: &Path, roots: &[PathBuf], exclude_dirs: &[
             };
             if entry.depth() == 0 {
                 continue;
+            }
+            processed += 1;
+            if processed.is_multiple_of(50) {
+                on_progress(processed, total_rows);
             }
             let path_str = entry.path().to_string_lossy().to_string();
             let meta = match entry.metadata() {
@@ -154,10 +172,24 @@ pub fn run_startup_reconcile(db_path: &Path, roots: &[PathBuf], exclude_dirs: &[
         }
     }
     tx.finish();
+    on_progress(processed, total_rows);
     log::info!(
         "[reconcile] Startup reconcile complete: removed {}, updated {updated} items.",
         stale.len()
     );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Fallback checks
+// ---------------------------------------------------------------------------
+
+/// Run one cheap fallback check.
+///
+/// Used at startup right after the watcher starts to catch any filesystem changes
+/// that occurred between the startup sync's disk scan and the watcher initialization.
+pub fn run_fallback_check(db_path: &Path, roots: &[PathBuf], exclude_dirs: &[String]) {
+    run_cheap_fallback(db_path, roots, exclude_dirs);
 }
 
 // ---------------------------------------------------------------------------
@@ -304,5 +336,54 @@ fn sync_folder(
             let _ = database::delete_by_path_prefix(tx.conn(), gone);
             tx.tick();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_startup_reconcile_progress_reporting() {
+        let temp_dir = std::env::temp_dir().join(format!("wf_test_rec_{}", std::process::id()));
+        let _ = fs::create_dir_all(&temp_dir);
+        let db_path = temp_dir.join("test_index.db");
+
+        // Create db and a dummy file entry
+        let conn = database::open(&db_path).expect("open db");
+        database::create_table(&conn).expect("create table");
+        let fe = FileEntry {
+            name: "alpha.txt".to_string(),
+            path: temp_dir.join("alpha.txt").to_string_lossy().to_string(),
+            extension: Some("txt".to_string()),
+            is_dir: false,
+            created_at: None,
+            modified_at: None,
+        };
+        database::insert_entry(&conn, &fe).expect("insert");
+        drop(conn);
+
+        let mut progress_calls = Vec::new();
+        let res = run_startup_reconcile(
+            &db_path,
+            &[temp_dir.clone()],
+            &[],
+            |processed, total| {
+                progress_calls.push((processed, total));
+            },
+        );
+
+        assert!(res.is_ok());
+        assert!(!progress_calls.is_empty(), "Expected progress callbacks");
+        // Initial call must report (0, total)
+        assert_eq!(progress_calls[0].0, 0);
+        assert_eq!(progress_calls[0].1, 1);
+
+        // Also test run_fallback_check does not panic
+        run_fallback_check(&db_path, &[temp_dir.clone()], &[]);
+
+        // Cleanup
+        let _ = fs::remove_dir_all(&temp_dir);
     }
 }

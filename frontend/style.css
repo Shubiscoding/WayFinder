@@ -462,3 +462,112 @@ footer b {
 .settings-btn:hover {
     filter: brightness(1.15);
 }
+
+/* ── Loading screen (reusable — driven by showLoading() in script.js) ──
+   Sits below the error box and settings modal (z-index 100) so errors raised
+   while loading are still visible. */
+.loading-box {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(13, 17, 8, 0.94);
+    z-index: 90;
+    padding: 24px;
+    outline: 0;
+}
+
+.loading-box[hidden] {
+    display: none;
+}
+
+.loading-content {
+    min-width: 280px;
+    max-width: 480px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+    padding: 24px 28px;
+    background: var(--panel);
+    border: 2px solid var(--lime);
+    text-align: center;
+}
+
+/* Row of pixel blocks that light up one after another */
+.loading-blocks {
+    display: flex;
+    gap: 6px;
+}
+
+.loading-blocks span {
+    width: 14px;
+    height: 14px;
+    background: var(--lime);
+    opacity: 0.2;
+    animation: block-chase 960ms steps(1) infinite;
+    animation-delay: calc(var(--n) * 100ms);
+}
+
+.loading-msg {
+    font: 16px var(--pixel);
+    color: var(--lime);
+}
+
+/* Pixel progress bar (driven by CSS variable --progress) */
+.loading-bar-wrap {
+    width: 100%;
+    height: 10px;
+    background: var(--bg);
+    border: 2px solid var(--lime);
+    padding: 1px;
+    box-sizing: border-box;
+}
+
+.loading-bar-wrap[hidden] {
+    display: none;
+}
+
+.loading-bar {
+    width: var(--progress, 0%);
+    height: 100%;
+    background: var(--lime);
+    transition: width 150ms linear;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .loading-bar {
+        transition: none;
+    }
+}
+
+.loading-detail {
+    font-size: 20px;
+    color: var(--text);
+}
+
+.loading-detail[hidden],
+.loading-hint[hidden] {
+    display: none;
+}
+
+.loading-hint {
+    font-size: 16px;
+    color: var(--muted);
+}
+
+.loading-hint b {
+    font-weight: normal;
+    color: var(--lime);
+}
+
+@keyframes block-chase {
+    0%   { opacity: 1; }
+    30%  { opacity: 0.2; }
+}
+
+/* Animations are disabled above for reduced motion, so show solid blocks. */
+@media (prefers-reduced-motion: reduce) {
+    .loading-blocks span { opacity: 1; }
+}

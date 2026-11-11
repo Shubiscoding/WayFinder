@@ -40,9 +40,7 @@ struct LastShown(Arc<Mutex<Instant>>);
 /// Records last_shown timestamp, unhides window, requests OS focus, and notifies frontend.
 pub fn show_launcher(app: &tauri::AppHandle) {
     if let Some(state) = app.try_state::<LastShown>() {
-        if let Ok(mut t) = state.0.lock() {
-            *t = Instant::now();
-        }
+        let _ = state.0.lock().map(|mut t| *t = Instant::now());
     }
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -65,6 +63,49 @@ struct AppConfig(Config);
 /// Set to true when the first crawl (or startup reconcile) has finished.
 struct CrawlDone(Arc<AtomicBool>);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum SyncPhase {
+    Waiting,
+    Crawling,
+    Reconciling,
+    Ready,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SyncStatus {
+    pub phase: SyncPhase,
+    pub processed: u64,
+    pub total: Option<u64>,
+    pub elapsed_ms: u64,
+    pub wait_remaining_s: Option<u32>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SyncProgressEvent {
+    pub phase: SyncPhase,
+    pub processed: u64,
+    pub total: Option<u64>,
+    pub elapsed_ms: u64,
+    pub wait_remaining_s: Option<u32>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SyncCompleteEvent {
+    pub elapsed_ms: u64,
+    pub error: Option<String>,
+}
+
+pub struct SyncStateInner {
+    pub phase: SyncPhase,
+    pub processed: u64,
+    pub total: Option<u64>,
+    pub started_at: Option<Instant>,
+    pub wait_remaining_s: Option<u32>,
+}
+
+#[derive(Clone)]
+pub struct SyncState(pub Arc<Mutex<SyncStateInner>>);
+
 /// A one-shot message the frontend shows in the error box at startup.
 struct StartupWarning(Mutex<Option<String>>);
 
@@ -77,6 +118,26 @@ struct IndexStatus {
 // ---------------------------------------------------------------------------
 // Tauri commands (called from JS with `invoke`)
 // ---------------------------------------------------------------------------
+
+/// Returns a snapshot of the current startup sync progress / state (Phase 5.6).
+#[tauri::command(async)]
+fn sync_status(sync: State<'_, SyncState>) -> Result<SyncStatus, String> {
+    let state = sync
+        .0
+        .lock()
+        .map_err(|e| format!("Could not read sync state: {e}"))?;
+    let elapsed_ms = state
+        .started_at
+        .map(|t| t.elapsed().as_millis() as u64)
+        .unwrap_or(0);
+    Ok(SyncStatus {
+        phase: state.phase,
+        processed: state.processed,
+        total: state.total,
+        elapsed_ms,
+        wait_remaining_s: state.wait_remaining_s,
+    })
+}
 
 /// Search for files matching `query`. Returns up to 5 ranked results.
 #[tauri::command(async)]
@@ -172,20 +233,38 @@ fn open_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
         .map_err(|e| format!("Could not open your web browser: {e}"))
 }
 
-/// Convert a file from one format to another using the converter registry (Phase 4).
+/// Search for files matching `query` whose extensions can be converted.
+#[tauri::command(async)]
+fn search_convertible(
+    query: String,
+    db: State<'_, Db>,
+) -> Result<Vec<search::SearchHit>, String> {
+    let conn = db
+        .0
+        .lock()
+        .map_err(|e| format!("The file index is busy, try again: {e}"))?;
+    let allowed = converter::registry::supported_source_extensions();
+    search::search_convertible(&conn, &query, allowed)
+}
+
+/// Supported target extensions for a given source extension.
+#[tauri::command]
+fn conversion_targets(ext: String) -> Vec<String> {
+    converter::registry::conversion_targets(&ext)
+        .into_iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// Convert a file from one format to another using the converter registry (Phase 4 / con: rework).
 ///
-/// Runs off the UI thread and releases the database lock before performing encoding.
+/// Runs off the UI thread without holding the database lock.
 #[tauri::command(async)]
 fn convert_file(
-    source: String,
-    target_ext: String,
-    db: State<'_, Db>,
+    source_path: String,
+    target_name: String,
 ) -> Result<converter::ConversionResult, String> {
-    let source_path = {
-        let guard = db.0.lock().ok();
-        converter::resolve_source(&source, guard.as_deref())?
-    };
-    converter::convert_resolved(&source_path, &target_ext)
+    converter::convert_file(&source_path, &target_name)
 }
 
 /// Terminate the application process cleanly, closing all windows and child processes.
@@ -426,18 +505,35 @@ fn main() {
                                 return;
                             }
                             if let Some(w) = app_h.get_webview_window("main") {
-                                if let Err(e) = w.hide() {
+                                let _ = w.hide().map_err(|e| {
                                     log::error!(
                                         "[main] Could not hide window on focus loss: {e}"
                                     );
-                                }
+                                });
                             }
                         }
                     });
                 }
             }
 
-            // ── Background indexing, watching, and reconcile (Phase 5) ─────
+            // ── Background startup sync, watcher, and fallback (Phase 5.6) ──
+            let initial_phase = if is_autostart_launch {
+                SyncPhase::Waiting
+            } else if needs_crawl {
+                SyncPhase::Crawling
+            } else {
+                SyncPhase::Reconciling
+            };
+
+            let sync_state = SyncState(Arc::new(Mutex::new(SyncStateInner {
+                phase: initial_phase,
+                processed: 0,
+                total: None,
+                started_at: Some(Instant::now()),
+                wait_remaining_s: if is_autostart_launch { Some(30) } else { None },
+            })));
+            app.manage(sync_state.clone());
+
             let crawl_done = Arc::new(AtomicBool::new(!needs_crawl));
             app.manage(CrawlDone(Arc::clone(&crawl_done)));
 
@@ -445,33 +541,208 @@ fn main() {
             let index_roots_bg = index_roots.clone();
             let exclude_dirs_bg = exclude_dirs.clone();
             let done_bg = Arc::clone(&crawl_done);
+            let sync_bg = Arc::clone(&sync_state.0);
+            let app_h = app.handle().clone();
 
             std::thread::spawn(move || {
-                // When launched via OS autostart, delay background work to avoid disk contention.
+                let startup_instant = Instant::now();
+
+                // 1. When launched via OS autostart, wait 30 seconds before sync to avoid login disk thrash.
                 if is_autostart_launch {
-                    log::info!("[main] Launched via autostart; delaying background reconcile by 30 seconds.");
-                    std::thread::sleep(std::time::Duration::from_secs(30));
+                    log::info!("[main] Launched via autostart; delaying sync by 30 seconds.");
+                    for remaining in (1..=30).rev() {
+                        {
+                            if let Ok(mut st) = sync_bg.lock() {
+                                st.phase = SyncPhase::Waiting;
+                                st.wait_remaining_s = Some(remaining);
+                            }
+                        }
+                        let _ = app_h.emit(
+                            "sync-progress",
+                            SyncProgressEvent {
+                                phase: SyncPhase::Waiting,
+                                processed: 0,
+                                total: None,
+                                elapsed_ms: startup_instant.elapsed().as_millis() as u64,
+                                wait_remaining_s: Some(remaining),
+                            },
+                        );
+                        std::thread::sleep(std::time::Duration::from_secs(1));
+                    }
                 }
-                if needs_crawl {
-                    crawler::run_crawl(&db_path_bg, &index_roots_bg, &exclude_dirs_bg);
+
+                // 2. Run ONE startup sync: crawl if empty, otherwise reconcile.
+                let sync_start = Instant::now();
+                let phase = if needs_crawl {
+                    SyncPhase::Crawling
                 } else {
-                    reconcile::run_startup_reconcile(&db_path_bg, &index_roots_bg, &exclude_dirs_bg);
+                    SyncPhase::Reconciling
+                };
+
+                {
+                    if let Ok(mut st) = sync_bg.lock() {
+                        st.phase = phase;
+                        st.started_at = Some(sync_start);
+                        st.wait_remaining_s = None;
+                        st.processed = 0;
+                        st.total = None;
+                    }
+                }
+
+                let _ = app_h.emit(
+                    "sync-progress",
+                    SyncProgressEvent {
+                        phase,
+                        processed: 0,
+                        total: None,
+                        elapsed_ms: 0,
+                        wait_remaining_s: None,
+                    },
+                );
+
+                let last_emit = Arc::new(Mutex::new(
+                    Instant::now() - std::time::Duration::from_millis(300),
+                ));
+
+                let sync_result: Result<(), String> = if needs_crawl {
+                    let last_emit_crawl = Arc::clone(&last_emit);
+                    let app_h_crawl = app_h.clone();
+                    let sync_bg_crawl = Arc::clone(&sync_bg);
+                    crawler::run_crawl(
+                        &db_path_bg,
+                        &index_roots_bg,
+                        &exclude_dirs_bg,
+                        move |processed| {
+                            let now = Instant::now();
+                            let should_emit = match last_emit_crawl.lock() {
+                                Ok(mut le) => {
+                                    if now.duration_since(*le)
+                                        >= std::time::Duration::from_millis(250)
+                                    {
+                                        *le = now;
+                                        true
+                                    } else {
+                                        false
+                                    }
+                                }
+                                Err(_) => false,
+                            };
+                            if should_emit {
+                                let elapsed_ms = sync_start.elapsed().as_millis() as u64;
+                                if let Ok(mut st) = sync_bg_crawl.lock() {
+                                    st.processed = processed;
+                                    st.total = None;
+                                }
+                                let _ = app_h_crawl.emit(
+                                    "sync-progress",
+                                    SyncProgressEvent {
+                                        phase: SyncPhase::Crawling,
+                                        processed,
+                                        total: None,
+                                        elapsed_ms,
+                                        wait_remaining_s: None,
+                                    },
+                                );
+                            }
+                        },
+                    )
+                } else {
+                    let last_emit_rec = Arc::clone(&last_emit);
+                    let app_h_rec = app_h.clone();
+                    let sync_bg_rec = Arc::clone(&sync_bg);
+                    reconcile::run_startup_reconcile(
+                        &db_path_bg,
+                        &index_roots_bg,
+                        &exclude_dirs_bg,
+                        move |processed, total| {
+                            let now = Instant::now();
+                            let should_emit = match last_emit_rec.lock() {
+                                Ok(mut le) => {
+                                    if now.duration_since(*le)
+                                        >= std::time::Duration::from_millis(250)
+                                    {
+                                        *le = now;
+                                        true
+                                    } else {
+                                        false
+                                    }
+                                }
+                                Err(_) => false,
+                            };
+                            if should_emit {
+                                let elapsed_ms = sync_start.elapsed().as_millis() as u64;
+                                if let Ok(mut st) = sync_bg_rec.lock() {
+                                    st.processed = processed;
+                                    st.total = Some(total);
+                                }
+                                let _ = app_h_rec.emit(
+                                    "sync-progress",
+                                    SyncProgressEvent {
+                                        phase: SyncPhase::Reconciling,
+                                        processed,
+                                        total: Some(total),
+                                        elapsed_ms,
+                                        wait_remaining_s: None,
+                                    },
+                                );
+                            }
+                        },
+                    )
+                };
+
+                let total_elapsed_ms = sync_start.elapsed().as_millis() as u64;
+                let sync_error = match sync_result {
+                    Ok(()) => {
+                        log::info!(
+                            "[sync] Startup sync finished successfully in {total_elapsed_ms} ms."
+                        );
+                        None
+                    }
+                    Err(e) => {
+                        log::error!("[sync] Startup sync failed: {e}");
+                        Some(e)
+                    }
+                };
+
+                // Mark sync complete and state ready
+                {
+                    if let Ok(mut st) = sync_bg.lock() {
+                        st.phase = SyncPhase::Ready;
+                    }
                 }
                 done_bg.store(true, Ordering::Release);
+
+                let _ = app_h.emit(
+                    "sync-complete",
+                    SyncCompleteEvent {
+                        elapsed_ms: total_elapsed_ms,
+                        error: sync_error,
+                    },
+                );
+
+                // 3. Start real-time filesystem watcher strictly AFTER sync completes.
+                watcher::start_watcher(
+                    db_path_bg.clone(),
+                    index_roots_bg.clone(),
+                    exclude_dirs_bg.clone(),
+                );
+
+                // 4. Run one cheap fallback check to cover disk changes made between sync scan and watcher start.
+                reconcile::run_fallback_check(&db_path_bg, &index_roots_bg, &exclude_dirs_bg);
+
+                // 5. Start the periodic 3-minute fallback loop.
+                reconcile::start_fallback_loop(db_path_bg, index_roots_bg, exclude_dirs_bg);
             });
-
-            // Real-time filesystem watcher with debouncing (Phase 5).
-            watcher::start_watcher(db_path.clone(), index_roots.clone(), exclude_dirs.clone());
-
-            // 3-minute lightweight periodic fallback check (Phase 5).
-            reconcile::start_fallback_loop(db_path, index_roots, exclude_dirs);
 
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             search_files,
             search_folders,
+            search_convertible,
+            conversion_targets,
             index_status,
+            sync_status,
             take_startup_warning,
             hide_window,
             open_path,
