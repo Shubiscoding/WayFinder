@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Bump this when the table layout changes. The index is only a cache of what
 /// is on disk, so an old layout is dropped and rebuilt by a fresh crawl.
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 /// One row that gets written to the `files` table.
 pub struct FileEntry {
@@ -31,13 +31,16 @@ pub fn open(db_path: &Path) -> Result<Connection> {
     Ok(conn)
 }
 
-/// Create the files table and indexes. Safe to call on every launch.
+/// Create the files and apps tables and indexes. Safe to call on every launch.
 /// If the table layout is older than SCHEMA_VERSION it is dropped and rebuilt
 /// (the app then crawls again, because the table is empty).
 pub fn create_table(conn: &Connection) -> Result<()> {
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     if version < SCHEMA_VERSION {
-        conn.execute_batch("DROP TABLE IF EXISTS files;")?;
+        conn.execute_batch(
+            "DROP TABLE IF EXISTS files;
+             DROP TABLE IF EXISTS apps;",
+        )?;
     }
 
     conn.execute_batch(
@@ -53,7 +56,17 @@ pub fn create_table(conn: &Connection) -> Result<()> {
             modified_at INTEGER
         );
         CREATE INDEX IF NOT EXISTS idx_files_kind_name ON files (is_dir, name_lower);
-        CREATE INDEX IF NOT EXISTS idx_files_parent ON files (parent);",
+        CREATE INDEX IF NOT EXISTS idx_files_parent ON files (parent);
+
+        CREATE TABLE IF NOT EXISTS apps (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            name        TEXT NOT NULL,
+            name_lower  TEXT NOT NULL,
+            path        TEXT NOT NULL UNIQUE,
+            usage_count INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_apps_name ON apps (name_lower);
+        CREATE INDEX IF NOT EXISTS idx_apps_usage ON apps (usage_count DESC);",
     )?;
 
     conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
@@ -183,6 +196,20 @@ pub fn children_of(conn: &Connection, folder: &str) -> HashSet<String> {
     out
 }
 
+fn begin_tx(conn: &Connection) -> bool {
+    if let Err(e) = conn.execute_batch("BEGIN IMMEDIATE") {
+        log::warn!("[database] Could not begin batch transaction: {e}");
+        return false;
+    }
+    true
+}
+
+fn commit_tx(conn: &Connection) {
+    if let Err(e) = conn.execute_batch("COMMIT") {
+        log::warn!("[database] Could not commit batch transaction: {e}");
+    }
+}
+
 /// Commits every `BATCH` writes so a long job never holds the write lock for
 /// minutes (which made watcher writes time out). Commits on drop.
 pub struct BatchTx<'a> {
@@ -195,7 +222,7 @@ const BATCH: u32 = 500;
 
 impl<'a> BatchTx<'a> {
     pub fn new(conn: &'a Connection) -> Self {
-        let open = conn.execute_batch("BEGIN").is_ok();
+        let open = begin_tx(conn);
         BatchTx { conn, pending: 0, open }
     }
 
@@ -208,16 +235,16 @@ impl<'a> BatchTx<'a> {
         self.pending += 1;
         if self.pending >= BATCH {
             if self.open {
-                let _ = self.conn.execute_batch("COMMIT");
+                commit_tx(self.conn);
             }
             self.pending = 0;
-            self.open = self.conn.execute_batch("BEGIN").is_ok();
+            self.open = begin_tx(self.conn);
         }
     }
 
     pub fn finish(mut self) {
         if self.open {
-            let _ = self.conn.execute_batch("COMMIT");
+            commit_tx(self.conn);
             self.open = false;
         }
     }
@@ -226,7 +253,7 @@ impl<'a> BatchTx<'a> {
 impl Drop for BatchTx<'_> {
     fn drop(&mut self) {
         if self.open {
-            let _ = self.conn.execute_batch("COMMIT");
+            commit_tx(self.conn);
         }
     }
 }

@@ -1,11 +1,29 @@
 // watcher.rs — Real-time filesystem watcher (notify-debouncer-mini).
 
+use crate::search_engine::apps;
 use crate::search_engine::crawler;
 use crate::search_engine::database::{self, BatchTx, FileEntry};
 use notify_debouncer_mini::{new_debouncer, notify::RecursiveMode};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::channel;
 use std::time::Duration;
+
+fn is_under_dir_ci(path: &Path, dir: &Path) -> bool {
+    let mut p_comps = path.components();
+    for d_comp in dir.components() {
+        match p_comps.next() {
+            Some(p_comp) => {
+                let p_s = p_comp.as_os_str().to_string_lossy().to_lowercase();
+                let d_s = d_comp.as_os_str().to_string_lossy().to_lowercase();
+                if p_s != d_s {
+                    return false;
+                }
+            }
+            None => return false,
+        }
+    }
+    true
+}
 
 pub fn start_watcher(db_path: PathBuf, roots: Vec<PathBuf>, exclude_dirs: Vec<String>) {
     std::thread::spawn(move || {
@@ -14,7 +32,8 @@ pub fn start_watcher(db_path: PathBuf, roots: Vec<PathBuf>, exclude_dirs: Vec<St
 }
 
 fn run_watcher(db_path: &Path, roots: &[PathBuf], exclude_dirs: &[String]) {
-    if roots.is_empty() {
+    let app_dirs = apps::start_menu_dirs();
+    if roots.is_empty() && app_dirs.is_empty() {
         return;
     }
 
@@ -45,15 +64,37 @@ fn run_watcher(db_path: &Path, roots: &[PathBuf], exclude_dirs: &[String]) {
         }
     }
 
+    for dir in &app_dirs {
+        if dir.exists() && !roots.iter().any(|r| is_under_dir_ci(dir, r)) {
+            if let Err(e) = debouncer.watcher().watch(dir, RecursiveMode::Recursive) {
+                log::warn!("[watcher] Could not watch Start Menu {}: {e}", dir.display());
+            } else {
+                log::info!("[watcher] Watching Start Menu {} for app changes", dir.display());
+            }
+        }
+    }
+
     while let Ok(event_result) = rx.recv() {
         match event_result {
             Ok(events) => {
-                // One transaction per debounced batch instead of one fsync per event.
-                let mut batch = BatchTx::new(&conn);
-                for event in events {
-                    handle_path_change(&mut batch, &event.path, roots, exclude_dirs);
+                let mut app_change = false;
+                {
+                    // One transaction per debounced batch instead of one fsync per event.
+                    let mut batch = BatchTx::new(&conn);
+                    for event in events {
+                        if app_dirs.iter().any(|d| is_under_dir_ci(&event.path, d)) {
+                            app_change = true;
+                            continue;
+                        }
+                        handle_path_change(&mut batch, &event.path, roots, exclude_dirs);
+                    }
+                    batch.finish();
                 }
-                batch.finish();
+                if app_change
+                    && let Err(e) = apps::sync_apps(&conn)
+                {
+                    log::error!("[watcher] Error syncing apps after Start Menu change: {e}");
+                }
             }
             Err(e) => log::error!("[watcher] Watch error: {e:?}"),
         }
@@ -78,7 +119,7 @@ fn handle_path_change(
     tx: &mut BatchTx,
     path: &Path,
     roots: &[PathBuf],
-    exclude_dirs: &[String],
+    exclude_dirs: &[String], 
 ) {
     // The root itself is never an index row.
     if roots.iter().any(|r| r.as_path() == path) {

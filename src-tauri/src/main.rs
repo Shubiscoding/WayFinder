@@ -165,6 +165,57 @@ fn search_folders(
     search::search_folders(&conn, &query)
 }
 
+/// Search for installed desktop applications matching `query`. Returns up to 5 ranked results.
+#[tauri::command(async)]
+fn search_apps(
+    query: String,
+    db: State<'_, Db>,
+) -> Result<Vec<search_engine::apps::AppHit>, String> {
+    let conn = db
+        .0
+        .lock()
+        .map_err(|e| format!("The file index is busy, try again: {e}"))?;
+    search_engine::apps::search_apps(&conn, &query)
+}
+
+/// Launch an installed desktop application by its ID.
+/// Looks up the path in the database, verifies existence, opens via ShellExecuteW,
+/// records usage count for ranking, and hides the launcher window.
+#[tauri::command(async)]
+fn launch_app(
+    id: i64,
+    app: tauri::AppHandle,
+    db: State<'_, Db>,
+) -> Result<(), String> {
+    let (name, path) = {
+        let conn = db
+            .0
+            .lock()
+            .map_err(|e| format!("The file index is busy, try again: {e}"))?;
+        search_engine::apps::prepare_launch(&conn, id)?
+    };
+
+    app.opener()
+        .open_path(path.clone(), None::<&str>)
+        .map_err(|e| {
+            format!(
+                "Windows could not launch \"{name}\": {e}. Check that the shortcut target still exists."
+            )
+        })?;
+
+    // Record usage count for future ranking
+    if let Ok(conn) = db.0.lock() {
+        let _ = search_engine::apps::record_app_usage(&conn, id);
+    }
+
+    // Hide the launcher window after a successful launch
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.hide();
+    }
+
+    Ok(())
+}
+
 #[tauri::command(async)]
 fn index_status(db: State<'_, Db>, done: State<'_, CrawlDone>) -> Result<IndexStatus, String> {
     let conn = db
@@ -690,18 +741,25 @@ fn main() {
                     )
                 };
 
+                // Also sync installed Windows Start Menu apps (fast < 20ms, no extra progress phase).
+                let apps_sync_res = search_engine::apps::sync_apps_at(&db_path_bg);
+                if let Err(ref e) = apps_sync_res {
+                    log::error!("[sync] App discovery failed: {e}");
+                }
+
                 let total_elapsed_ms = sync_start.elapsed().as_millis() as u64;
-                let sync_error = match sync_result {
-                    Ok(()) => {
+                let sync_error = match (sync_result, apps_sync_res) {
+                    (Ok(()), Ok(_)) => {
                         log::info!(
                             "[sync] Startup sync finished successfully in {total_elapsed_ms} ms."
                         );
                         None
                     }
-                    Err(e) => {
+                    (Err(e), _) => {
                         log::error!("[sync] Startup sync failed: {e}");
                         Some(e)
                     }
+                    (Ok(()), Err(e)) => Some(e),
                 };
 
                 // Mark sync complete and state ready
@@ -739,6 +797,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             search_files,
             search_folders,
+            search_apps,
+            launch_app,
             search_convertible,
             conversion_targets,
             index_status,

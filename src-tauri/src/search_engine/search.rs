@@ -398,7 +398,7 @@ fn escape_like(text: &str) -> String {
 /// Word starts with: 70
 /// Contains: 60
 /// Fuzzy (SkimMatcherV2): 1-50
-fn score_match(name: &str, query: &str, fuzzy_engine: &SkimMatcherV2) -> i32 {
+pub fn score_match(name: &str, query: &str, fuzzy_engine: &SkimMatcherV2) -> i32 {
     let name_lower = name.to_lowercase();
 
     // Name without its extension, for the "exact without extension" tier.

@@ -20,6 +20,12 @@ const COMMANDS = {
         empty: 'No folders found',
         search: searchFolders,
     },
+    app: {
+        hint: 'Open apps',
+        placeholder: 'app name',
+        empty: 'No applications found',
+        search: searchApps,
+    },
     con: {
         hint: 'Convert images',
         placeholder: 'type the name of an image to convert',
@@ -421,6 +427,38 @@ async function searchFolders(query) {
     }
 }
 
+/** Search installed applications via the Rust backend. Returns a Promise<item[]>. */
+async function searchApps(query) {
+    if (indexing) {
+        return [{
+            tag: '…',
+            title: 'Indexing your apps',
+            sub: 'Results will appear when done',
+            run: () => {},
+        }];
+    }
+    try {
+        const hits = await invoke('search_apps', { query: query.trim() });
+        return hits.map((h) => ({
+            tag: 'app',
+            title: h.name,
+            sub: h.path,
+            run: () => launchApp(h.id),
+        }));
+    } catch (err) {
+        showError(`Application search failed: ${err}`);
+        return [];
+    }
+}
+
+async function launchApp(id) {
+    try {
+        await invoke('launch_app', { id });
+    } catch (err) {
+        showError(typeof err === 'string' ? err : (err?.message || String(err)));
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Image conversion (Phase 4 / con: rework)
 // ---------------------------------------------------------------------------
@@ -710,14 +748,13 @@ function scheduleUpdate() {
 async function update(animate = false) {
     fitInput();
     const query = getQuery();
-    launcher.classList.toggle('compact', !query);
 
     // Each search gets a number. If a newer search starts while this one is
     // waiting for Rust, this one is out of date and is thrown away.
     const ticket = ++searchTicket;
 
     let result = [];
-    if (query) {
+    if (query || mode === 'app') {
         try {
             result = await COMMANDS[mode].search(query);
         } catch (err) {
@@ -729,6 +766,7 @@ async function update(animate = false) {
 
     items = result.slice(0, MAX_ITEMS);
     index = 0;
+    launcher.classList.toggle('compact', !query && items.length === 0);
     render(animate);
 }
 
