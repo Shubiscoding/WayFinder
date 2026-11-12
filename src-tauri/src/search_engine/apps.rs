@@ -9,7 +9,8 @@
 //  • Launch apps safely via ShellExecuteW (no cmd, no path from frontend).
 
 use crate::search_engine::crawler;
-use crate::search_engine::database::escape_like;
+use crate::search_engine::database::{self, escape_like};
+use crate::search_engine::paths;
 use crate::search_engine::search::score_match;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use rusqlite::{params, Connection, Row};
@@ -78,25 +79,43 @@ pub fn start_menu_dirs() -> Vec<PathBuf> {
 
 /// Returns true if a shortcut name matches common utility / junk entries
 /// that should not appear in application search.
+/// Uses whole-word / edge-phrase matching so legitimate apps such as
+/// "Revo Uninstaller" or "Intel Driver & Support Assistant" are kept.
 pub fn is_junk_shortcut(stem: &str) -> bool {
-    let lower = stem.to_lowercase();
-    const JUNK_SUBSTRINGS: &[&str] = &[
-        "uninstall",
-        "help",
-        "readme",
-        "read me",
-        "documentation",
-        "release notes",
-        "what's new",
-        "license",
-        "website",
-        "visit website",
-        "homepage",
-        "web site",
-        "support",
-        "troubleshoot",
+    const JUNK_EDGE_PHRASES: &[&[&str]] = &[
+        &["help"],
+        &["support"],
+        &["readme"],
+        &["read", "me"],
+        &["documentation"],
+        &["release", "notes"],
+        &["what's", "new"],
+        &["license"],
+        &["website"],
+        &["visit", "website"],
+        &["homepage"],
+        &["web", "site"],
+        &["troubleshoot"],
     ];
-    JUNK_SUBSTRINGS.iter().any(|&junk| lower.contains(junk))
+
+    let lower = stem.to_lowercase();
+    let words: Vec<&str> = lower
+        .split(|c: char| !c.is_alphanumeric() && c != '\'')
+        .map(|w| w.trim_matches('\''))
+        .filter(|w| !w.is_empty())
+        .collect();
+
+    if words.is_empty() {
+        return false;
+    }
+
+    if words.contains(&"uninstall") {
+        return true;
+    }
+
+    JUNK_EDGE_PHRASES
+        .iter()
+        .any(|phrase| words.starts_with(phrase) || words.ends_with(phrase))
 }
 
 pub struct DiscoveredApp {
@@ -104,19 +123,30 @@ pub struct DiscoveredApp {
     pub path: String,
 }
 
+pub struct ScanResult {
+    pub apps: Vec<DiscoveredApp>,
+    pub complete: bool,
+}
+
 /// Internal scanner taking custom directories for testability.
-pub fn scan_dirs(dirs: &[PathBuf]) -> Vec<DiscoveredApp> {
+pub fn scan_dirs(dirs: &[PathBuf]) -> ScanResult {
     let mut map: HashMap<String, DiscoveredApp> = HashMap::new();
+    let mut complete = true;
 
     for dir in dirs {
         if !dir.exists() {
+            complete = false;
             continue;
         }
         let walker = WalkDir::new(dir).follow_links(false).into_iter();
-        for result in walker.filter_entry(|e| !crawler::is_hidden(e)) {
+        for result in walker.filter_entry(|e| e.depth() == 0 || !crawler::is_hidden(e)) {
             let entry = match result {
                 Ok(e) => e,
-                Err(_) => continue,
+                Err(e) => {
+                    log::debug!("[apps] Error scanning {:?}: {e}", e.path());
+                    complete = false;
+                    continue;
+                }
             };
             if !entry.file_type().is_file() {
                 continue;
@@ -145,14 +175,14 @@ pub fn scan_dirs(dirs: &[PathBuf]) -> Vec<DiscoveredApp> {
             // First one encountered wins (per-user dir is checked before all-users dir)
             map.entry(lower).or_insert_with(|| DiscoveredApp {
                 name: stem.to_string(),
-                path: path.to_string_lossy().to_string(),
+                path: paths::normalize_path(&path.to_string_lossy()),
             });
         }
     }
 
     let mut apps: Vec<DiscoveredApp> = map.into_values().collect();
     apps.sort_by_key(|a| a.name.to_lowercase());
-    apps
+    ScanResult { apps, complete }
 }
 
 /// Synchronize discovered Start Menu shortcuts with the `apps` table in SQLite.
@@ -171,35 +201,35 @@ pub fn sync_apps(conn: &Connection) -> Result<usize, String> {
 /// Synchronize shortcuts from `dirs` into the `apps` table, preserving `usage_count`.
 pub fn sync_apps_from_dirs(conn: &Connection, dirs: &[PathBuf]) -> Result<usize, String> {
     let start = Instant::now();
-    let discovered = scan_dirs(dirs);
+    let scan = scan_dirs(dirs);
     let scan_dur = start.elapsed();
-    let count = discovered.len();
+    let count = scan.apps.len();
 
-    conn.execute_batch("BEGIN")
+    database::begin_immediate(conn)
         .map_err(|e| format!("Could not begin apps transaction: {e}"))?;
 
-    let mut paths_set = std::collections::HashSet::new();
+    let mut names_set = std::collections::HashSet::with_capacity(count);
 
     let res = (|| -> Result<(), rusqlite::Error> {
         {
             let mut insert_stmt = conn.prepare_cached(
                 "INSERT INTO apps (name, name_lower, path, usage_count)
                  VALUES (?1, ?2, ?3, 0)
-                 ON CONFLICT(path) DO UPDATE SET
+                 ON CONFLICT(name_lower) DO UPDATE SET
                     name = excluded.name,
-                    name_lower = excluded.name_lower",
+                    path = excluded.path",
             )?;
 
-            for app in &discovered {
-                paths_set.insert(app.path.clone());
+            for app in &scan.apps {
                 let name_lower = app.name.to_lowercase();
+                names_set.insert(name_lower.clone());
                 insert_stmt.execute(params![app.name, name_lower, app.path])?;
             }
         }
 
-        // Clean up shortcuts no longer present on disk
-        {
-            let mut select_stmt = conn.prepare_cached("SELECT id, path FROM apps")?;
+        // Only prune missing apps when every configured Start Menu folder was read cleanly.
+        if scan.complete && !dirs.is_empty() {
+            let mut select_stmt = conn.prepare_cached("SELECT id, name_lower FROM apps")?;
 
             let db_apps: Vec<(i64, String)> = select_stmt
                 .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
@@ -208,25 +238,26 @@ pub fn sync_apps_from_dirs(conn: &Connection, dirs: &[PathBuf]) -> Result<usize,
 
             let mut delete_stmt = conn.prepare_cached("DELETE FROM apps WHERE id = ?1")?;
 
-            for (id, path) in db_apps {
-                if !paths_set.contains(&path) {
-                    let _ = delete_stmt.execute(params![id]);
+            for (id, name_lower) in db_apps {
+                if !names_set.contains(&name_lower) {
+                    delete_stmt.execute(params![id])?;
                 }
             }
+        } else if !scan.complete {
+            log::warn!(
+                "[apps] Start Menu scan was incomplete; skipping stale-app cleanup so usage counts are preserved."
+            );
         }
         Ok(())
     })();
 
-    match res {
-        Ok(()) => {
-            conn.execute_batch("COMMIT")
-                .map_err(|e| format!("Could not commit apps transaction: {e}"))?;
-        }
-        Err(e) => {
-            let _ = conn.execute_batch("ROLLBACK");
-            return Err(format!("Could not sync apps: {e}"));
-        }
+    if let Err(e) = res {
+        database::rollback_tx(conn);
+        return Err(format!("Could not sync apps: {e}"));
     }
+
+    database::commit_or_rollback_res(conn, count as u32)
+        .map_err(|e| format!("Could not commit apps transaction: {e}"))?;
 
     let total_dur = start.elapsed();
     log::info!(
@@ -432,13 +463,28 @@ mod tests {
 
     #[test]
     fn test_junk_shortcut_detection() {
+        // Junk entries that must be dropped
         assert!(is_junk_shortcut("Uninstall App"));
+        assert!(is_junk_shortcut("Uninstall Foo"));
+        assert!(is_junk_shortcut("Foo Uninstall"));
         assert!(is_junk_shortcut("Visual Studio Help"));
+        assert!(is_junk_shortcut("Foo Help"));
+        assert!(is_junk_shortcut("Help Center"));
         assert!(is_junk_shortcut("Readme"));
+        assert!(is_junk_shortcut("Foo Readme"));
         assert!(is_junk_shortcut("Read Me.txt"));
         assert!(is_junk_shortcut("Documentation"));
         assert!(is_junk_shortcut("Release Notes"));
+        assert!(is_junk_shortcut("App What's New"));
         assert!(is_junk_shortcut("Visit Website"));
+        assert!(is_junk_shortcut("Foo License"));
+        assert!(is_junk_shortcut("Homepage"));
+        assert!(is_junk_shortcut("Support Tool"));
+        assert!(is_junk_shortcut("Troubleshoot Foo"));
+
+        // Legitimate applications that must be kept
+        assert!(!is_junk_shortcut("Revo Uninstaller"));
+        assert!(!is_junk_shortcut("Intel Driver & Support Assistant"));
         assert!(!is_junk_shortcut("Visual Studio Code"));
         assert!(!is_junk_shortcut("Google Chrome"));
         assert!(!is_junk_shortcut("Spotify"));
@@ -448,6 +494,7 @@ mod tests {
     #[test]
     fn test_scan_and_sync_apps() {
         let temp_dir = std::env::temp_dir().join(format!("wf_test_apps_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp_dir);
         let user_apps = temp_dir.join("user_apps");
         let sys_apps = temp_dir.join("sys_apps");
         let db_dir = temp_dir.join("db");
@@ -463,15 +510,19 @@ mod tests {
         let _ = fs::write(sys_apps.join("Code Editor.lnk"), "duplicate sys shortcut");
 
         let scanned = scan_dirs(&[user_apps.clone(), sys_apps.clone()]);
-        assert_eq!(scanned.len(), 2);
-        let names: Vec<&str> = scanned.iter().map(|a| a.name.as_str()).collect();
+        assert!(scanned.complete);
+        assert_eq!(scanned.apps.len(), 2);
+        let names: Vec<&str> = scanned.apps.iter().map(|a| a.name.as_str()).collect();
         assert!(names.contains(&"Code Editor"));
         assert!(names.contains(&"Calculator"));
         assert!(!names.contains(&"Uninstall Code Editor"));
 
         // User shortcut path must be selected
-        let code_app = scanned.iter().find(|a| a.name == "Code Editor").unwrap();
-        assert_eq!(code_app.path, user_apps.join("Code Editor.lnk").to_string_lossy().to_string());
+        let code_app = scanned.apps.iter().find(|a| a.name == "Code Editor").unwrap();
+        assert_eq!(
+            code_app.path,
+            paths::normalize_path(&user_apps.join("Code Editor.lnk").to_string_lossy())
+        );
 
         // Test SQLite sync
         let db_path = db_dir.join("test_apps.db");
@@ -491,7 +542,10 @@ mod tests {
         let app_id = hits[0].id;
         let (name, path) = prepare_launch(&conn, app_id).unwrap();
         assert_eq!(name, "Code Editor");
-        assert_eq!(path, user_apps.join("Code Editor.lnk").to_string_lossy().to_string());
+        assert_eq!(
+            path,
+            paths::normalize_path(&user_apps.join("Code Editor.lnk").to_string_lossy())
+        );
 
         // Test usage recording
         record_app_usage(&conn, app_id).unwrap();
@@ -508,20 +562,60 @@ mod tests {
         assert_eq!(fuzzy_hits.len(), 1);
         assert_eq!(fuzzy_hits[0].name, "Calculator");
 
-        // Re-sync must preserve usage_count and drop uninstalled shortcuts
+        // (a) Remove uninstalled Calculator, AND (b) remove user_apps\Code Editor.lnk so sys_apps wins:
+        // usage_count for Code Editor must survive!
         let _ = fs::remove_file(sys_apps.join("Calculator.lnk"));
+        let _ = fs::remove_file(user_apps.join("Code Editor.lnk"));
         let resynced = sync_apps_from_dirs(&conn, &[user_apps.clone(), sys_apps.clone()]).unwrap();
         assert_eq!(resynced, 1);
 
         let after_hits = search_apps(&conn, "").unwrap();
         assert_eq!(after_hits.len(), 1);
+        assert_eq!(after_hits[0].name, "Code Editor");
         assert_eq!(after_hits[0].usage_count, 2);
+        assert_eq!(
+            after_hits[0].path,
+            paths::normalize_path(&sys_apps.join("Code Editor.lnk").to_string_lossy())
+        );
         assert!(search_apps(&conn, "Calculator").unwrap().is_empty());
 
         // Broken/missing shortcut on disk returns a plain-English error
-        let _ = fs::remove_file(user_apps.join("Code Editor.lnk"));
+        let _ = fs::remove_file(sys_apps.join("Code Editor.lnk"));
         let launch_err = prepare_launch(&conn, app_id).unwrap_err();
         assert!(launch_err.contains("could not find"));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_empty_or_incomplete_scan_preserves_existing_apps_and_usage() {
+        let temp_dir = std::env::temp_dir().join(format!("wf_test_apps_safe_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp_dir);
+        let apps_dir = temp_dir.join("apps");
+        let missing_dir = temp_dir.join("missing_apps");
+        let _ = fs::create_dir_all(&apps_dir);
+        let _ = fs::write(apps_dir.join("KeepApp.lnk"), "shortcut");
+
+        let db_path = temp_dir.join("apps_safe.db");
+        let conn = crate::search_engine::database::open(&db_path).unwrap();
+        crate::search_engine::database::create_table(&conn).unwrap();
+
+        sync_apps_from_dirs(&conn, std::slice::from_ref(&apps_dir)).unwrap();
+        let hits = search_apps(&conn, "KeepApp").unwrap();
+        assert_eq!(hits.len(), 1);
+        record_app_usage(&conn, hits[0].id).unwrap();
+
+        // Empty directory list must delete nothing.
+        sync_apps_from_dirs(&conn, &[]).unwrap();
+        let after_empty = search_apps(&conn, "KeepApp").unwrap();
+        assert_eq!(after_empty.len(), 1);
+        assert_eq!(after_empty[0].usage_count, 1);
+
+        // Missing / incomplete directory scan must delete nothing.
+        sync_apps_from_dirs(&conn, std::slice::from_ref(&missing_dir)).unwrap();
+        let after_missing = search_apps(&conn, "KeepApp").unwrap();
+        assert_eq!(after_missing.len(), 1);
+        assert_eq!(after_missing[0].usage_count, 1);
 
         let _ = fs::remove_dir_all(&temp_dir);
     }

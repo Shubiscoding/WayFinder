@@ -36,6 +36,10 @@ use tauri_plugin_opener::OpenerExt;
 /// Guard used by hide-on-blur: ignores blur events fired within 150 ms of show.
 struct LastShown(Arc<Mutex<Instant>>);
 
+/// True while a native drag-out operation is active so hide-on-blur does not
+/// hide the launcher window (which would cancel the OS drag).
+struct DragActive(Arc<AtomicBool>);
+
 /// Single unified launcher activation path.
 /// Records last_shown timestamp, unhides window, requests OS focus, and notifies frontend.
 pub fn show_launcher(app: &tauri::AppHandle) {
@@ -245,6 +249,49 @@ fn hide_window(window: tauri::WebviewWindow) -> Result<(), String> {
         .map_err(|e| format!("Could not hide the launcher window: {e}"))
 }
 
+const DRAG_ICON_BYTES: &[u8] = include_bytes!("../icons/32x32.png");
+
+#[derive(serde::Serialize)]
+struct DragCheck {
+    path: String,
+    icon: &'static [u8],
+}
+
+/// Ensure `path` is present in `conn` before opening or dragging it.
+fn ensure_indexed_conn(conn: &Connection, path: &str, action: &str) -> Result<(), String> {
+    if !search_engine::database::is_indexed(conn, path) {
+        return Err(format!(
+            "\"{path}\" is not in the file index, so WayFinder will not {action} it."
+        ));
+    }
+    Ok(())
+}
+
+/// Ensure `path` is present in the SQLite index before opening or dragging it.
+fn ensure_indexed(db: &State<'_, Db>, path: &str, action: &str) -> Result<(), String> {
+    let conn = db
+        .0
+        .lock()
+        .map_err(|e| format!("The file index is busy, try again: {e}"))?;
+    ensure_indexed_conn(&conn, path, action)
+}
+
+/// Verify that `path` still exists on disk before starting a drag.
+fn verify_drag_path_on_disk(path: &str) -> Result<(), String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(format!(
+            "WayFinder could not drag \"{path}\" because the item no longer exists on disk. Search again to refresh your results."
+        )),
+        Err(e) => {
+            log::warn!("[drag] Could not access \"{path}\": {e}");
+            Err(format!(
+                "WayFinder could not access \"{path}\" to start a drag. Check that you have permission to read it and that the drive is available."
+            ))
+        }
+    }
+}
+
 /// Open a file or folder with its default app (same as double-clicking it).
 ///
 /// SECURITY: only opens paths verified to exist in the SQLite index, preventing
@@ -252,17 +299,7 @@ fn hide_window(window: tauri::WebviewWindow) -> Result<(), String> {
 /// ShellExecuteW without shell text parsing.
 #[tauri::command(async)]
 fn open_path(app: tauri::AppHandle, db: State<'_, Db>, path: String) -> Result<(), String> {
-    {
-        let conn = db
-            .0
-            .lock()
-            .map_err(|e| format!("The file index is busy, try again: {e}"))?;
-        if !search_engine::database::is_indexed(&conn, &path) {
-            return Err(format!(
-                "\"{path}\" is not in the file index, so WayFinder will not open it."
-            ));
-        }
-    } // lock released before launching
+    ensure_indexed(&db, &path, "open")?;
 
     app.opener()
         .open_path(path.clone(), None::<&str>)
@@ -272,6 +309,40 @@ fn open_path(app: tauri::AppHandle, db: State<'_, Db>, path: String) -> Result<(
                  Check that it still exists and that you can open it."
             )
         })
+}
+
+/// Verify that `path` is indexed and still exists on disk before starting an
+/// OS drag-out copy operation, and supply the embedded preview icon bytes.
+#[tauri::command(async)]
+fn check_drag_path(db: State<'_, Db>, path: String) -> Result<DragCheck, String> {
+    ensure_indexed(&db, &path, "drag")?;
+    verify_drag_path_on_disk(&path)?;
+    Ok(DragCheck {
+        path,
+        icon: DRAG_ICON_BYTES,
+    })
+}
+
+/// Track whether a native OS drag operation is active so `hide_on_blur` does not
+/// hide the launcher mid-drag. When ending a cancelled drag (`refocus = true`),
+/// refreshes the blur grace timer and restores focus so the launcher stays open.
+#[tauri::command]
+fn set_drag_active(
+    active: bool,
+    refocus: Option<bool>,
+    drag_active: State<'_, DragActive>,
+    last_shown: State<'_, LastShown>,
+    app: tauri::AppHandle,
+) {
+    drag_active.0.store(active, Ordering::Release);
+    if !active && refocus.unwrap_or(false) {
+        if let Ok(mut t) = last_shown.0.lock() {
+            *t = Instant::now();
+        }
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.set_focus();
+        }
+    }
 }
 
 #[tauri::command]
@@ -390,6 +461,8 @@ fn main() {
         Instant::now() - std::time::Duration::from_secs(1),
     ));
     let last_shown_blur = Arc::clone(&last_shown);
+    let drag_active = Arc::new(AtomicBool::new(false));
+    let drag_active_blur = Arc::clone(&drag_active);
 
     tauri::Builder::default()
         // Single instance plugin must be registered FIRST (Phase 5.5.3).
@@ -408,7 +481,9 @@ fn main() {
             Some(vec!["--autostart"]),
         ))
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_drag::init())
         .manage(LastShown(last_shown))
+        .manage(DragActive(drag_active))
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, _shortcut, event| {
@@ -508,7 +583,8 @@ fn main() {
             }
             let is_autostart_launch = std::env::args().any(|arg| arg == "--autostart");
 
-            let exclude_dirs = cfg.exclude_dirs.clone();
+            let filters = crawler::Filters::from_config(&cfg);
+            let fallback_interval_secs = cfg.fallback_interval_secs;
             let index_roots = config::resolved_roots(&cfg);
             // Stash hide_on_blur before cfg is moved into AppConfig.
             let hide_on_blur = cfg.hide_on_blur;
@@ -547,6 +623,11 @@ fn main() {
                 if let Some(win) = app.get_webview_window("main") {
                     win.on_window_event(move |event| {
                         if let tauri::WindowEvent::Focused(false) = event {
+                            if drag_active_blur.load(Ordering::Acquire) {
+                                // Keep the launcher visible while an OS drag-out
+                                // loop is active; hiding the window cancels it.
+                                return;
+                            }
                             let elapsed = ls
                                 .lock()
                                 .map(|t| t.elapsed())
@@ -590,7 +671,15 @@ fn main() {
 
             let db_path_bg = db_path.clone();
             let index_roots_bg = index_roots.clone();
-            let exclude_dirs_bg = exclude_dirs.clone();
+            let filters_bg = filters.clone();
+            let mut ignore_dirs_bg = vec![data_dir.clone()];
+            for extra_dir in [app.path().app_local_data_dir(), app.path().app_log_dir()] {
+                if let Ok(dir) = extra_dir
+                    && !ignore_dirs_bg.iter().any(|existing| existing == &dir)
+                {
+                    ignore_dirs_bg.push(dir);
+                }
+            }
             let done_bg = Arc::clone(&crawl_done);
             let sync_bg = Arc::clone(&sync_state.0);
             let app_h = app.handle().clone();
@@ -662,7 +751,7 @@ fn main() {
                     crawler::run_crawl(
                         &db_path_bg,
                         &index_roots_bg,
-                        &exclude_dirs_bg,
+                        &filters_bg,
                         move |processed| {
                             let now = Instant::now();
                             let should_emit = match last_emit_crawl.lock() {
@@ -704,7 +793,7 @@ fn main() {
                     reconcile::run_startup_reconcile(
                         &db_path_bg,
                         &index_roots_bg,
-                        &exclude_dirs_bg,
+                        &filters_bg,
                         move |processed, total| {
                             let now = Instant::now();
                             let should_emit = match last_emit_rec.lock() {
@@ -782,14 +871,20 @@ fn main() {
                 watcher::start_watcher(
                     db_path_bg.clone(),
                     index_roots_bg.clone(),
-                    exclude_dirs_bg.clone(),
+                    ignore_dirs_bg,
+                    filters_bg.clone(),
                 );
 
                 // 4. Run one cheap fallback check to cover disk changes made between sync scan and watcher start.
-                reconcile::run_fallback_check(&db_path_bg, &index_roots_bg, &exclude_dirs_bg);
+                reconcile::run_fallback_check(&db_path_bg, &index_roots_bg, &filters_bg);
 
-                // 5. Start the periodic 3-minute fallback loop.
-                reconcile::start_fallback_loop(db_path_bg, index_roots_bg, exclude_dirs_bg);
+                // 5. Start the periodic configurable fallback loop (default 900s).
+                reconcile::start_fallback_loop(
+                    db_path_bg,
+                    index_roots_bg,
+                    filters_bg,
+                    fallback_interval_secs,
+                );
             });
 
             Ok(())
@@ -806,6 +901,8 @@ fn main() {
             take_startup_warning,
             hide_window,
             open_path,
+            check_drag_path,
+            set_drag_active,
             open_url,
             convert_file,
             quit_app,
@@ -814,4 +911,72 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("WayFinder failed to start");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_drag_check_requires_indexed_existing_item_and_valid_png_icon() {
+        assert!(DRAG_ICON_BYTES.starts_with(b"\x89PNG\r\n\x1a\n"));
+
+        let temp_dir = std::env::temp_dir().join(format!("wf_test_drag_{}", std::process::id()));
+        let _ = fs::create_dir_all(&temp_dir);
+        let file_path = temp_dir.join("sample.txt");
+        let dir_path = temp_dir.join("sub_folder");
+        fs::write(&file_path, "hello").unwrap();
+        fs::create_dir_all(&dir_path).unwrap();
+
+        let db_path = temp_dir.join("drag_index.db");
+        let conn = database::open(&db_path).unwrap();
+        database::create_table(&conn).unwrap();
+
+        let file_str = file_path.to_string_lossy().to_string();
+        let dir_str = dir_path.to_string_lossy().to_string();
+
+        // Unindexed path must be rejected
+        let unindexed_err = ensure_indexed_conn(&conn, &file_str, "drag").unwrap_err();
+        assert!(unindexed_err.contains("not in the file index"));
+
+        // Insert file and folder into index
+        database::insert_entry(
+            &conn,
+            &database::FileEntry::new(
+                "sample.txt".to_string(),
+                &file_str,
+                Some("txt".to_string()),
+                false,
+                None,
+                None,
+            ),
+        )
+        .unwrap();
+        database::insert_entry(
+            &conn,
+            &database::FileEntry::new(
+                "sub_folder".to_string(),
+                &dir_str,
+                None,
+                true,
+                None,
+                None,
+            ),
+        )
+        .unwrap();
+
+        // Indexed existing file & folder pass
+        ensure_indexed_conn(&conn, &file_str, "drag").unwrap();
+        verify_drag_path_on_disk(&file_str).unwrap();
+        ensure_indexed_conn(&conn, &dir_str, "drag").unwrap();
+        verify_drag_path_on_disk(&dir_str).unwrap();
+
+        // Deleted file returns a plain-English error
+        fs::remove_file(&file_path).unwrap();
+        let missing_err = verify_drag_path_on_disk(&file_str).unwrap_err();
+        assert!(missing_err.contains("no longer exists on disk"));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
 }

@@ -2,6 +2,7 @@
 pub mod apps;
 pub mod crawler;
 pub mod database;
+pub mod paths;
 pub mod reconcile;
 pub mod search;
 pub mod watcher;

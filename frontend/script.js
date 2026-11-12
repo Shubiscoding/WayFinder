@@ -1,6 +1,8 @@
 // script.js — All UI logic for WayFinder.
 // Commands, rendering, keyboard navigation, Tauri invoke calls.
 
+import { startDrag } from '@crabnebula/tauri-plugin-drag';
+
 const { invoke } = window.__TAURI__.core;
 
 // ---------------------------------------------------------------------------
@@ -376,6 +378,67 @@ async function openPath(path) {
 }
 
 // ---------------------------------------------------------------------------
+// Drag-out copy (Phase 5.8)
+// ---------------------------------------------------------------------------
+
+const DRAG_THRESHOLD_PX = 5;
+let pendingDrag = null;       // { item, startX, startY }
+let dragActive = false;       // true while OS drag-out is running
+let suppressClickUntil = 0;
+
+/**
+ * Verify an indexed item via Rust and start a Copy-only OS drag operation.
+ * Hides the launcher on drop; keeps it open if the drag is cancelled or fails.
+ */
+async function beginDragOut(item) {
+    if (!item?.dragPath || dragActive) return;
+    dragActive = true;
+    let dropped = false;
+    let dragStarted = false;
+
+    try {
+        const checked = await invoke('check_drag_path', { path: item.dragPath });
+        await invoke('set_drag_active', { active: true });
+        dragStarted = true;
+
+        let dragResult = null;
+        await startDrag(
+            {
+                item: [checked.path],
+                icon: checked.icon,
+                mode: 'copy',
+            },
+            (payload) => {
+                if (payload?.result) dragResult = payload.result;
+            },
+        );
+
+        // Give the event channel one tick if its callback arrives right after invoke resolves.
+        if (dragResult === null) {
+            await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+
+        if (dragResult === 'Dropped') {
+            dropped = true;
+            await invoke('set_drag_active', { active: false, refocus: false });
+            dragStarted = false;
+            dismissLauncher();
+        }
+    } catch (err) {
+        showError(typeof err === 'string' ? err : (err?.message || String(err)));
+    } finally {
+        suppressClickUntil = performance.now() + 250;
+        if (dragStarted) {
+            await invoke('set_drag_active', { active: false, refocus: !dropped }).catch(() => {});
+        }
+        dragActive = false;
+        if (!dropped && errorBox.hidden) {
+            input.focus();
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Search functions
 // ---------------------------------------------------------------------------
 
@@ -395,6 +458,7 @@ async function searchFiles(query) {
             tag: h.extension ? `.${h.extension}` : (h.is_dir ? 'dir' : 'file'),
             title: h.name,
             sub: h.path,
+            dragPath: h.path,
             run: () => openPath(h.path),
         }));
     } catch (err) {
@@ -419,6 +483,7 @@ async function searchFolders(query) {
             tag: 'dir',
             title: h.name,
             sub: h.path,
+            dragPath: h.path,
             run: () => openPath(h.path),
         }));
     } catch (err) {
@@ -697,7 +762,16 @@ function buildRow(item, i) {
 
     row.append(badge, info);
     row.addEventListener('mousemove', () => i !== index && setIndex(i));
-    row.addEventListener('click', () => item.run());
+    if (item.dragPath) {
+        row.addEventListener('mousedown', (e) => {
+            if (e.button !== 0 || isLoading() || dragActive) return;
+            pendingDrag = { item, startX: e.clientX, startY: e.clientY };
+        });
+    }
+    row.addEventListener('click', () => {
+        if (dragActive || performance.now() < suppressClickUntil) return;
+        item.run();
+    });
     return row;
 }
 
@@ -962,9 +1036,33 @@ launcher.addEventListener('animationend', (e) => {
     if (e.animationName === 'sweep-out') finishClose();
 });
 
+document.addEventListener('mousemove', (e) => {
+    if (!pendingDrag || dragActive) return;
+    if ((e.buttons & 1) === 0) {
+        pendingDrag = null;
+        return;
+    }
+    const dx = e.clientX - pendingDrag.startX;
+    const dy = e.clientY - pendingDrag.startY;
+    if (Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return;
+
+    const { item } = pendingDrag;
+    pendingDrag = null;
+    void beginDragOut(item);
+});
+
+document.addEventListener('mouseup', () => {
+    pendingDrag = null;
+});
+
+window.addEventListener('blur', () => {
+    if (!dragActive) pendingDrag = null;
+});
+
 // Click outside the panel → dismiss.
 // Treat the error box, loading screen and settings modal as "inside" — clicking them must not close the launcher.
 document.addEventListener('mousedown', (e) => {
+    if (dragActive) return;
     if (!launcher.hidden
         && !launcher.contains(e.target)
         && !errorBox.contains(e.target)
@@ -975,6 +1073,7 @@ document.addEventListener('mousedown', (e) => {
 });
 
 function resetLauncher() {
+    pendingDrag = null;
     launcher.classList.remove('closing');
     launcher.hidden = false;
     // Replay the open sweep even if the element was never display:none.

@@ -184,6 +184,8 @@ input::placeholder {
     gap: 14px;
     padding: 10px 16px;
     cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
 }
 
 .results li.active {

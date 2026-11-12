@@ -8,6 +8,7 @@
     "core:window:allow-set-focus",
     "core:window:allow-is-visible",
     "opener:default",
+    "drag:default",
     "global-shortcut:default"
   ]
 }
