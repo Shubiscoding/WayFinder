@@ -6,9 +6,24 @@
 
 A fast, keyboard-first launcher for Windows. Press a hotkey, type a few letters, and jump straight to the file, folder, web search or conversion you need.
 
+<<<<<<< HEAD
 [Platform: Windows](https://img.shields.io/badge/platform-Windows-0078D6) [Built with Tauri v2](https://img.shields.io/badge/built%20with-Tauri%20v2-24C8D8) [Backend: Rust](https://img.shields.io/badge/backend-Rust-DEA584) [License: MIT](https://img.shields.io/badge/license-MIT-b8ff2c)
 
 <!-- TODO: once the repo exists, add a release badge: ![Latest release](https://img.shields.io/github/v/release/YOUR-USERNAME/WayFinder) --> <!-- TODO: hero screenshot (compact launcher, nothing typed yet) --> <img src="docs/screenshots/hero.png" alt="WayFinder launcher" width="640"> </div>
+=======
+![Platform: Windows](https://img.shields.io/badge/platform-Windows-0078D6)
+![Built with Tauri v2](https://img.shields.io/badge/built%20with-Tauri%20v2-24C8D8)
+![Backend: Rust](https://img.shields.io/badge/backend-Rust-DEA584)
+![License: MIT](https://img.shields.io/badge/license-MIT-b8ff2c)
+<!-- TODO: once the repo exists, add a release badge:
+![Latest release](https://img.shields.io/github/v/release/YOUR-USERNAME/WayFinder)
+-->
+
+<!-- TODO: hero screenshot (compact launcher, nothing typed yet) -->
+<img src="docs/screenshots/hero.png" alt="WayFinder launcher" width="640">
+
+</div>
+>>>>>>> a8854fe41eca97edf4288a914c78565dc5fba808
 
 ---
 
@@ -21,6 +36,7 @@ Windows search is slow to open and slow to answer. WayFinder lives in the backgr
 - **Instant file and folder search.** Type `fil:` or `fol:` followed by a name. Results are ranked: exact name first, then names that start with your text, then word matches, then partial and fuzzy matches. Files you changed recently get a small boost.
 - **Always up to date.** A background watcher notices new, renamed and deleted files within a second or so. A startup check and a periodic safety scan catch anything that was missed while the app was closed.
 - **Web search in one step.** `bow:` opens your search in your default browser (DuckDuckGo).
+<<<<<<< HEAD
 - **Quick image conversions.** `con:` converts image files between common formats (PNG, JPG, WebP, BMP, TIFF) right in their folder, with instant suggestions.
 - **Global hotkey.** `Ctrl+Space` shows and hides the launcher from anywhere. Change it in the config file.
 - **Light on resources.** A small window, a local SQLite index and a Rust backend. Searching never freezes the window, even while the index is still being built.
@@ -31,19 +47,48 @@ Windows search is slow to open and slow to answer. WayFinder lives in the backgr
 ## Install
 
 1. Go to the [Releases page](https://github.com/YOUR-USERNAME/WayFinder/releases) <!-- TODO: fix link -->
+=======
+- **Quick conversions.** `con:` converts units (`10 km to mi`, `72 f to c`, `5 lb to kg`) and image files (`Lemon.png to jpg`).
+- **Global hotkey.** `Ctrl+Space` shows and hides the launcher from anywhere. Change it in the config file.
+- **Light on resources.** A small window, a local SQLite index and a Rust backend. Searching never freezes the window, even while the index is still being built.
+- **A look of its own.** A pixel-font terminal style with bundled fonts, so it works fully offline.
+<!-- TODO: add these lines if they ship in v0.1.0 (remove otherwise):
+- **Lives in the tray.** Quit from the tray icon or with `sys: quit`.
+- **Start with Windows.** Optional autostart, off by default.
+- **Settings page.** See your current configuration at a glance.
+-->
+
+<!-- TODO: results screenshot (for example, `fil:` with five results) -->
+<p align="center">
+  <img src="docs/screenshots/search.png" alt="Searching for files" width="640">
+</p>
+
+## Install
+
+1. Go to the [Releases page]([https://github.com/Shubiscoding/WayFinder/releases/tag/v1.0.0]) <!-- TODO: fix link -->
+>>>>>>> a8854fe41eca97edf4288a914c78565dc5fba808
 2. Download the latest `WayFinder_x.y.z_x64-setup.exe` <!-- TODO: match the real installer name -->
 3. Run the installer, then press **Ctrl+Space**.
 
 **Requirements:** Windows 10 or 11. WayFinder uses Microsoft's WebView2 runtime. It is already part of Windows 11 and up-to-date Windows 10, and the installer takes care of it if it is missing.
 
+<<<<<<< HEAD
 > **First launch:** WayFinder builds its file index on first start. A retro progress screen shows elapsed time and progress while indexing. Once indexing completes, the launcher is ready to search and a real-time background watcher keeps the index up to date.
 
 <!-- TODO: keep this note only if the installer is not code-signed: > **Windows SmartScreen:** unsigned apps trigger a "Windows protected your PC" warning. Choose **More info**, then **Run anyway**. -->
+=======
+> **First launch:** WayFinder builds its index in the background. This can take a minute or more on a large drive. You can search right away, and results get more complete as indexing progresses.
+
+<!-- TODO: keep this note only if the installer is not code-signed:
+> **Windows SmartScreen:** unsigned apps trigger a "Windows protected your PC" warning. Choose **More info**, then **Run anyway**.
+-->
+>>>>>>> a8854fe41eca97edf4288a914c78565dc5fba808
 
 ## Using WayFinder
 
 Press **Ctrl+Space**, then type a command prefix followed by your query. You can also pick a command from the dropdown on the left of the search bar.
 
+<<<<<<< HEAD
 |Prefix|What it does|Example|
 |---|---|---|
 |`fil:`|Search files|`fil: invoice`|
@@ -60,17 +105,45 @@ Press **Ctrl+Space**, then type a command prefix followed by your query. You can
 |`Tab`|Switch command (in `con:`, jump between the two fields)|
 |`Alt` + `↓`|Open the command dropdown|
 |`Esc`|Clear the search, then close the launcher|
+=======
+| Prefix | What it does | Example |
+|---|---|---|
+| `fil:` | Search files | `fil: invoice` |
+| `fol:` | Search folders | `fol: downloads` |
+| `bow:` | Search the web in your default browser | `bow: rust lifetimes` |
+| `con:` | Convert units or image files | `con: 10 km to mi` |
+
+### Keys
+
+| Key | Action |
+|---|---|
+| `↑` `↓` | Move through results |
+| `Enter` | Open the selected result |
+| `Tab` | Switch command (in `con:`, jump between the two fields) |
+| `Alt` + `↓` | Open the command dropdown |
+| `Esc` | Clear the search, then close the launcher |
+>>>>>>> a8854fe41eca97edf4288a914c78565dc5fba808
 
 Results open with the program Windows normally uses for that file type, exactly like a double-click.
 
 ### Converting
 
+<<<<<<< HEAD
 - **Images:** PNG, JPG, JPEG, JFIF, WebP, BMP, and TIFF in any direction.
   - In `con:` mode, typing suggests indexed image files with matching names.
   - Pick a file with Enter, click, or Tab; WayFinder sets the first field and prefills the target in the second field (e.g. `Lemon.`).
   - Enter the target extension (or edit the target name) and press Enter. The new file is saved next to the original without changing the source or overwriting any existing file.
 
 <!-- TODO: conversion screenshot --> <p align="center"> <img src="docs/screenshots/convert.png" alt="Converting an image" width="640"> </p>
+=======
+- **Units:** length, mass and temperature, for example `con: 100 cm to in`.
+- **Images:** PNG, JPEG, WebP, BMP and TIFF in any direction, for example `con: Lemon.png to webp`. The converted file is saved next to the original. Type a full path, or just a file name and WayFinder finds it in your index.
+
+<!-- TODO: conversion screenshot -->
+<p align="center">
+  <img src="docs/screenshots/convert.png" alt="Converting an image" width="640">
+</p>
+>>>>>>> a8854fe41eca97edf4288a914c78565dc5fba808
 
 ## Configuration
 
@@ -92,12 +165,21 @@ It is created on first run. Edit it with any text editor and restart WayFinder t
 }
 ```
 
+<<<<<<< HEAD
 |Option|Meaning|
 |---|---|
 |`hotkey`|Global shortcut that shows or hides the launcher, for example `"alt+space"`|
 |`index_roots`|Folders to index. Empty means your home folder. Example: `["C:\\Users\\you\\Documents", "D:\\Projects"]`|
 |`exclude_dirs`|Folder names that are never indexed|
 |`hide_on_blur`|Hide the launcher when it loses focus. Set to `false` only when debugging|
+=======
+| Option | Meaning |
+|---|---|
+| `hotkey` | Global shortcut that shows or hides the launcher, for example `"alt+space"` |
+| `index_roots` | Folders to index. Empty means your home folder. Example: `["C:\\Users\\you\\Documents", "D:\\Projects"]` |
+| `exclude_dirs` | Folder names that are never indexed |
+| `hide_on_blur` | Hide the launcher when it loses focus. Set to `false` only when debugging |
+>>>>>>> a8854fe41eca97edf4288a914c78565dc5fba808
 
 Hidden files and folders are never indexed.
 
@@ -105,7 +187,11 @@ Hidden files and folders are never indexed.
 
 - Your index and settings stay in `%APPDATA%\com.wayfinder.app\` on your own PC.
 - WayFinder has no accounts and sends no usage data anywhere.
+<<<<<<< HEAD
 - The only time it touches the network is when _you_ run `bow:`, and then it is your browser that opens the page.
+=======
+- The only time it touches the network is when *you* run `bow:`, and then it is your browser that opens the page.
+>>>>>>> a8854fe41eca97edf4288a914c78565dc5fba808
 - Files are opened through the Windows shell, never by building command-line text from file names.
 
 ## Troubleshooting
@@ -127,7 +213,10 @@ You will need:
 - The [Tauri prerequisites for Windows](https://v2.tauri.app/start/prerequisites/): Microsoft C++ Build Tools and WebView2
 
 ```powershell
+<<<<<<< HEAD
 git clone https://github.com/YOUR-USERNAME/WayFinder.git   # TODO: fix link
+=======
+>>>>>>> a8854fe41eca97edf4288a914c78565dc5fba808
 cd WayFinder
 npm install
 
@@ -193,7 +282,11 @@ Contributions and ideas are welcome. Please open an issue first for anything lar
 
 ## License
 
+<<<<<<< HEAD
 Released under the [MIT License](https://claude.ai/chat/LICENSE).
+=======
+Released under the [MIT License](LICENSE).
+>>>>>>> a8854fe41eca97edf4288a914c78565dc5fba808
 
 ## Credits
 
@@ -208,4 +301,8 @@ Released under the [MIT License](https://claude.ai/chat/LICENSE).
 
 Made with care. If WayFinder saves you a few seconds a day, a star on the repo is much appreciated.
 
+<<<<<<< HEAD
 </div>
+=======
+</div>
+>>>>>>> a8854fe41eca97edf4288a914c78565dc5fba808
