@@ -4,26 +4,34 @@
 
 **Find anything on your PC in a keystroke.**
 
-A fast, keyboard-first launcher for Windows. Press a hotkey, type a few letters, and jump straight to the file, folder, web search or conversion you need.
+A fast, keyboard-first launcher for Windows. Press a hotkey, type a few letters, and jump straight to the file, folder, app, web search or conversion you need.
 
-<<<<<<< HEAD
-[Platform: Windows](https://img.shields.io/badge/platform-Windows-0078D6) [Built with Tauri v2](https://img.shields.io/badge/built%20with-Tauri%20v2-24C8D8) [Backend: Rust](https://img.shields.io/badge/backend-Rust-DEA584) [License: MIT](https://img.shields.io/badge/license-MIT-b8ff2c)
-
-<!-- TODO: once the repo exists, add a release badge: ![Latest release](https://img.shields.io/github/v/release/YOUR-USERNAME/WayFinder) --> <!-- TODO: hero screenshot (compact launcher, nothing typed yet) --> <img src="docs/screenshots/hero.png" alt="WayFinder launcher" width="640"> </div>
-=======
 ![Platform: Windows](https://img.shields.io/badge/platform-Windows-0078D6)
 ![Built with Tauri v2](https://img.shields.io/badge/built%20with-Tauri%20v2-24C8D8)
 ![Backend: Rust](https://img.shields.io/badge/backend-Rust-DEA584)
 ![License: MIT](https://img.shields.io/badge/license-MIT-b8ff2c)
-<!-- TODO: once the repo exists, add a release badge:
-![Latest release](https://img.shields.io/github/v/release/YOUR-USERNAME/WayFinder)
--->
+![Latest release](https://img.shields.io/github/v/release/Shubiscoding/WayFinder)
 
 <!-- TODO: hero screenshot (compact launcher, nothing typed yet) -->
 <img src="docs/screenshots/hero.png" alt="WayFinder launcher" width="640">
 
 </div>
->>>>>>> a8854fe41eca97edf4288a914c78565dc5fba808
+
+---
+
+## What's new in v2
+
+Version 2 is the biggest update so far. The full list is in the [changelog](CHANGELOG.md).
+
+- **`app:` opens your installed programs.** Type a few letters and launch anything from your Start Menu. Apps you use often rise to the top.
+- **Drag a result out to copy it.** Drag a file or folder from the launcher onto the Desktop or into an Explorer window and WayFinder makes a copy. The original is never moved.
+- **Much faster startup.** On the author's PC, re-checking an index of about 53,000 items dropped from roughly 88 seconds to about 2.6 seconds, and a brand-new index takes about 7 seconds.
+- **A cleaner index.** Hidden dot-folders such as `.cargo` and `.rustup`, and junk file types such as `.dll`, are skipped by default, so results are less noisy. Both are configurable.
+- **Lives in the tray.** Tray icon, `sys:` commands, a Settings view, single-instance protection, and optional start with Windows.
+- **A loading screen with live progress** while the index is checked at startup.
+- **Image conversion only.** Unit conversion (`con: 10 km to mi`) has been removed. `con:` now focuses on converting images.
+
+**Upgrading from v1:** the file index rebuilds once on first launch, and your `app:` launch counts start fresh. Your `config.json` keeps working, and the new options get sensible defaults.
 
 ---
 
@@ -34,29 +42,15 @@ Windows search is slow to open and slow to answer. WayFinder lives in the backgr
 ## Features
 
 - **Instant file and folder search.** Type `fil:` or `fol:` followed by a name. Results are ranked: exact name first, then names that start with your text, then word matches, then partial and fuzzy matches. Files you changed recently get a small boost.
-- **Always up to date.** A background watcher notices new, renamed and deleted files within a second or so. A startup check and a periodic safety scan catch anything that was missed while the app was closed.
+- **Open any installed app.** `app:` finds Start Menu shortcuts and ranks them by how well the name matches and how often you launch them.
+- **Drag out to copy.** Drag a `fil:` or `fol:` result to the Desktop or an Explorer folder to copy it there.
+- **Always up to date.** A background watcher notices new, renamed and deleted files within a second or so. A quick check at startup and a periodic safety scan catch anything that changed while the app was closed.
 - **Web search in one step.** `bow:` opens your search in your default browser (DuckDuckGo).
-<<<<<<< HEAD
-- **Quick image conversions.** `con:` converts image files between common formats (PNG, JPG, WebP, BMP, TIFF) right in their folder, with instant suggestions.
+- **Image conversion.** `con:` converts image files, for example `Lemon.png to webp`.
 - **Global hotkey.** `Ctrl+Space` shows and hides the launcher from anywhere. Change it in the config file.
-- **Light on resources.** A small window, a local SQLite index and a Rust backend. Searching never freezes the window, even while the index is still being built.
+- **Lives in the tray.** Quit from the tray icon or with `sys: quit`. Optional autostart with Windows (off by default) and a Settings view are included.
+- **Light on resources.** A small window, a local SQLite index and a Rust backend. A short loading screen shows while the index is checked at startup, and after that searching never freezes the window.
 - **A look of its own.** A pixel-font terminal style with bundled fonts, so it works fully offline.
-
-<!-- TODO: add these lines if they ship in v0.1.0 (remove otherwise): - **Lives in the tray.** Quit from the tray icon or with `sys: quit`. - **Start with Windows.** Optional autostart, off by default. - **Settings page.** See your current configuration at a glance. --> <!-- TODO: results screenshot (for example, `fil:` with five results) --> <p align="center"> <img src="docs/screenshots/search.png" alt="Searching for files" width="640"> </p>
-
-## Install
-
-1. Go to the [Releases page](https://github.com/YOUR-USERNAME/WayFinder/releases) <!-- TODO: fix link -->
-=======
-- **Quick conversions.** `con:` converts units (`10 km to mi`, `72 f to c`, `5 lb to kg`) and image files (`Lemon.png to jpg`).
-- **Global hotkey.** `Ctrl+Space` shows and hides the launcher from anywhere. Change it in the config file.
-- **Light on resources.** A small window, a local SQLite index and a Rust backend. Searching never freezes the window, even while the index is still being built.
-- **A look of its own.** A pixel-font terminal style with bundled fonts, so it works fully offline.
-<!-- TODO: add these lines if they ship in v0.1.0 (remove otherwise):
-- **Lives in the tray.** Quit from the tray icon or with `sys: quit`.
-- **Start with Windows.** Optional autostart, off by default.
-- **Settings page.** See your current configuration at a glance.
--->
 
 <!-- TODO: results screenshot (for example, `fil:` with five results) -->
 <p align="center">
@@ -65,53 +59,28 @@ Windows search is slow to open and slow to answer. WayFinder lives in the backgr
 
 ## Install
 
-1. Go to the [Releases page]([https://github.com/Shubiscoding/WayFinder/releases/tag/v1.0.0]) <!-- TODO: fix link -->
->>>>>>> a8854fe41eca97edf4288a914c78565dc5fba808
+1. Go to the [Releases page](https://github.com/Shubiscoding/WayFinder/releases/latest).
 2. Download the latest `WayFinder_x.y.z_x64-setup.exe` <!-- TODO: match the real installer name -->
 3. Run the installer, then press **Ctrl+Space**.
 
 **Requirements:** Windows 10 or 11. WayFinder uses Microsoft's WebView2 runtime. It is already part of Windows 11 and up-to-date Windows 10, and the installer takes care of it if it is missing.
 
-<<<<<<< HEAD
-> **First launch:** WayFinder builds its file index on first start. A retro progress screen shows elapsed time and progress while indexing. Once indexing completes, the launcher is ready to search and a real-time background watcher keeps the index up to date.
+> **First launch:** WayFinder builds its index while a loading screen shows live progress. On the author's PC about 53,000 items took around 7 seconds. A large drive can take a minute or more. Later starts only re-check what changed and take a few seconds.
 
-<!-- TODO: keep this note only if the installer is not code-signed: > **Windows SmartScreen:** unsigned apps trigger a "Windows protected your PC" warning. Choose **More info**, then **Run anyway**. -->
-=======
-> **First launch:** WayFinder builds its index in the background. This can take a minute or more on a large drive. You can search right away, and results get more complete as indexing progresses.
-
-<!-- TODO: keep this note only if the installer is not code-signed:
-> **Windows SmartScreen:** unsigned apps trigger a "Windows protected your PC" warning. Choose **More info**, then **Run anyway**.
--->
->>>>>>> a8854fe41eca97edf4288a914c78565dc5fba808
+> **Windows SmartScreen:** WayFinder is not code-signed, so Windows may show a "Windows protected your PC" warning. Choose **More info**, then **Run anyway**.
 
 ## Using WayFinder
 
-Press **Ctrl+Space**, then type a command prefix followed by your query. You can also pick a command from the dropdown on the left of the search bar.
+Press **Ctrl+Space**, then type a command prefix followed by your query. You can also pick a command from the dropdown on the left of the search bar, where each command appears as `#fil`, `#app` and so on.
 
-<<<<<<< HEAD
-|Prefix|What it does|Example|
-|---|---|---|
-|`fil:`|Search files|`fil: invoice`|
-|`fol:`|Search folders|`fol: downloads`|
-|`bow:`|Search the web in your default browser|`bow: rust lifetimes`|
-|`con:`|Convert image files|`con: Lemon.jfif`|
-
-### Keys
-
-|Key|Action|
-|---|---|
-|`↑` `↓`|Move through results|
-|`Enter`|Open the selected result|
-|`Tab`|Switch command (in `con:`, jump between the two fields)|
-|`Alt` + `↓`|Open the command dropdown|
-|`Esc`|Clear the search, then close the launcher|
-=======
 | Prefix | What it does | Example |
 |---|---|---|
 | `fil:` | Search files | `fil: invoice` |
 | `fol:` | Search folders | `fol: downloads` |
+| `app:` | Open an installed app | `app: calculator` |
+| `con:` | Convert image files | `con: Lemon.png to webp` |
 | `bow:` | Search the web in your default browser | `bow: rust lifetimes` |
-| `con:` | Convert units or image files | `con: 10 km to mi` |
+| `sys:` | System actions: Settings, Quit WayFinder | `sys: settings` |
 
 ### Keys
 
@@ -119,31 +88,28 @@ Press **Ctrl+Space**, then type a command prefix followed by your query. You can
 |---|---|
 | `↑` `↓` | Move through results |
 | `Enter` | Open the selected result |
-| `Tab` | Switch command (in `con:`, jump between the two fields) |
+| `Tab` | Switch command (in `con:`, pick a suggestion or jump between the two fields) |
 | `Alt` + `↓` | Open the command dropdown |
 | `Esc` | Clear the search, then close the launcher |
->>>>>>> a8854fe41eca97edf4288a914c78565dc5fba808
 
 Results open with the program Windows normally uses for that file type, exactly like a double-click.
 
-### Converting
+### Copy by dragging
 
-<<<<<<< HEAD
-- **Images:** PNG, JPG, JPEG, JFIF, WebP, BMP, and TIFF in any direction.
-  - In `con:` mode, typing suggests indexed image files with matching names.
-  - Pick a file with Enter, click, or Tab; WayFinder sets the first field and prefills the target in the second field (e.g. `Lemon.`).
-  - Enter the target extension (or edit the target name) and press Enter. The new file is saved next to the original without changing the source or overwriting any existing file.
+Press and hold the mouse on a `fil:` or `fol:` result, then drag it onto the Desktop or into an Explorer window. WayFinder makes a **copy**, even when the destination is on the same drive. The original stays where it is. If the destination already has a file with that name, Windows asks what to do.
 
-<!-- TODO: conversion screenshot --> <p align="center"> <img src="docs/screenshots/convert.png" alt="Converting an image" width="640"> </p>
-=======
-- **Units:** length, mass and temperature, for example `con: 100 cm to in`.
-- **Images:** PNG, JPEG, WebP, BMP and TIFF in any direction, for example `con: Lemon.png to webp`. The converted file is saved next to the original. Type a full path, or just a file name and WayFinder finds it in your index.
+Press `Esc` while dragging to cancel. After a successful drop, the launcher hides itself.
+
+### Converting images
+
+- **Formats:** PNG, JPEG (`.jpg`, `.jpeg`, `.jfif`), WebP, BMP and TIFF (`.tif`, `.tiff`), in any direction.
+- **How:** type `con:` and start typing the name of the image. Pick it from the suggestions, then choose the new name or extension, for example `Lemon.png to webp`.
+- **Where the result goes:** the converted file is saved next to the original. The original is never changed, and WayFinder refuses to overwrite a file that already exists.
 
 <!-- TODO: conversion screenshot -->
 <p align="center">
   <img src="docs/screenshots/convert.png" alt="Converting an image" width="640">
 </p>
->>>>>>> a8854fe41eca97edf4288a914c78565dc5fba808
 
 ## Configuration
 
@@ -153,7 +119,7 @@ WayFinder stores its settings in a single file:
 %APPDATA%\com.wayfinder.app\config.json
 ```
 
-It is created on first run. Edit it with any text editor and restart WayFinder to apply changes. If the file is missing or broken, WayFinder falls back to safe defaults and keeps working.
+It is created on first run. Edit it with any text editor and restart WayFinder to apply changes. To see your current settings, type `sys: settings` or choose **Settings** from the tray icon. If the file is missing or broken, WayFinder falls back to safe defaults and keeps working.
 
 ```json
 {
@@ -161,46 +127,54 @@ It is created on first run. Edit it with any text editor and restart WayFinder t
   "hotkey": "ctrl+space",
   "index_roots": [],
   "exclude_dirs": ["node_modules", ".git"],
-  "hide_on_blur": true
+  "exclude_extensions": ["dll", "sys", "tmp", "pdb"],
+  "skip_dot_dirs": true,
+  "fallback_interval_secs": 900,
+  "hide_on_blur": true,
+  "autostart": false
 }
 ```
 
-<<<<<<< HEAD
-|Option|Meaning|
-|---|---|
-|`hotkey`|Global shortcut that shows or hides the launcher, for example `"alt+space"`|
-|`index_roots`|Folders to index. Empty means your home folder. Example: `["C:\\Users\\you\\Documents", "D:\\Projects"]`|
-|`exclude_dirs`|Folder names that are never indexed|
-|`hide_on_blur`|Hide the launcher when it loses focus. Set to `false` only when debugging|
-=======
+The `exclude_extensions` list above is shortened. The built-in default list is longer.
+
 | Option | Meaning |
 |---|---|
 | `hotkey` | Global shortcut that shows or hides the launcher, for example `"alt+space"` |
 | `index_roots` | Folders to index. Empty means your home folder. Example: `["C:\\Users\\you\\Documents", "D:\\Projects"]` |
 | `exclude_dirs` | Folder names that are never indexed |
+| `exclude_extensions` | File types that are never indexed, written without the dot. Applies to files only; a folder named `x.dll` is still indexed |
+| `skip_dot_dirs` | Skip folders whose names start with a dot, such as `.cargo` or `.rustup`. Files such as `.gitignore` are still indexed |
+| `fallback_interval_secs` | How often the safety scan checks for missed changes, in seconds |
 | `hide_on_blur` | Hide the launcher when it loses focus. Set to `false` only when debugging |
->>>>>>> a8854fe41eca97edf4288a914c78565dc5fba808
+| `autostart` | Start WayFinder with Windows. Off by default |
 
-Hidden files and folders are never indexed.
+### What gets indexed
+
+- Your home folder, or the folders in `index_roots`.
+- Not indexed: hidden files and folders, dot-folders (unless you turn the option off), the folder names in `exclude_dirs`, and the file types in `exclude_extensions`.
+- Shortcuts and junctions are listed but never followed, so they cannot cause loops. OneDrive files are indexed.
 
 ## Privacy
 
 - Your index and settings stay in `%APPDATA%\com.wayfinder.app\` on your own PC.
 - WayFinder has no accounts and sends no usage data anywhere.
-<<<<<<< HEAD
-- The only time it touches the network is when _you_ run `bow:`, and then it is your browser that opens the page.
-=======
 - The only time it touches the network is when *you* run `bow:`, and then it is your browser that opens the page.
->>>>>>> a8854fe41eca97edf4288a914c78565dc5fba808
 - Files are opened through the Windows shell, never by building command-line text from file names.
+- Dragging a file out only makes a copy. WayFinder never moves or deletes your files.
 
 ## Troubleshooting
 
 **The hotkey does nothing.** Another program (often an input-method switcher) may already use `Ctrl+Space`. Pick another combination in `config.json`, such as `"alt+space"`, and restart.
 
-**A file is missing from the results.** If you just installed WayFinder, the first index may still be building. Otherwise check that the file is not hidden, not inside an excluded folder, and inside one of your `index_roots`.
+**A file is missing from the results.** Check that the file is not hidden, not inside an excluded folder or a dot-folder, not one of the file types in `exclude_extensions`, and inside one of your `index_roots`.
+
+**An app is missing from `app:`.** WayFinder lists apps that have a Start Menu shortcut. Microsoft Store apps are not supported yet.
+
+**The launcher closes when I start dragging.** Make sure `hide_on_blur` is not set to `false` while testing something else, then try again. If it keeps happening, please open an issue.
 
 **Start the index over.** Quit WayFinder, delete `index.db`, `index.db-wal` and `index.db-shm` from `%APPDATA%\com.wayfinder.app\`, then start it again.
+
+**Where are the logs?** WayFinder writes a log file in its app log folder, under `%LOCALAPPDATA%\com.wayfinder.app\`. Include it when you report a problem.
 
 **Uninstall completely.** Remove WayFinder from Windows Settings, then delete the `%APPDATA%\com.wayfinder.app\` folder.
 
@@ -213,10 +187,6 @@ You will need:
 - The [Tauri prerequisites for Windows](https://v2.tauri.app/start/prerequisites/): Microsoft C++ Build Tools and WebView2
 
 ```powershell
-<<<<<<< HEAD
-git clone https://github.com/YOUR-USERNAME/WayFinder.git   # TODO: fix link
-=======
->>>>>>> a8854fe41eca97edf4288a914c78565dc5fba808
 cd WayFinder
 npm install
 
@@ -226,22 +196,25 @@ npm run tauri build     # build the installer
 
 The installer is created under `src-tauri\target\release\bundle\`.
 
-Restart `tauri dev` after changing Rust code, `Cargo.toml` or `tauri.conf.json`. To check the Rust side, run `cargo check` and `cargo clippy` inside `src-tauri/`.
+Restart `tauri dev` after changing Rust code, `Cargo.toml` or `tauri.conf.json`. To check the Rust side, run `cargo check`, `cargo clippy` and `cargo test` inside `src-tauri/`.
+
+Tip: keep the project folder (and `src-tauri\target\`) outside OneDrive. Syncing build output can corrupt the build cache.
 
 ## How it works
 
 ```
- Windows files ──► crawler (first run) ─┐
-                                        ▼
- file watcher ──► SQLite index (WAL) ◄── startup check + periodic safety scan
-                        │
-                        ▼
- you type ──► ranked search (Rust) ──► results in the launcher
+ Windows files ──► startup sync (first crawl, or one-pass reconcile) ─┐
+                                                                      ▼
+ file watcher ──► SQLite index (WAL, case-insensitive paths) ◄── safety scan
+                          │
+                          ▼
+ you type ──► ranked search (Rust) ──► results ──► open, or drag out to copy
 ```
 
 - **Frontend:** plain HTML, CSS and JavaScript, bundled with Vite.
 - **Backend:** Rust on [Tauri v2](https://v2.tauri.app/).
-- **Index:** SQLite in WAL mode, so searches keep working while the index is being updated.
+- **Index:** SQLite in WAL mode, so searches keep working while the index is being updated. One shared set of filters decides what is indexed, so the crawler, the startup check and the watcher always agree.
+- **Startup:** one background pass either builds the index (first run) or walks the disk once to find what changed, then the watcher takes over.
 - **Conversions:** a small registry where each conversion is one entry, so new formats are easy to add.
 
 ### Project layout
@@ -249,12 +222,13 @@ Restart `tauri dev` after changing Rust code, `Cargo.toml` or `tauri.conf.json`.
 ```
 WayFinder/
 ├─ frontend/                 # index.html, style.css, script.js, fonts/
+├─ docs/                     # screenshots and design notes
 └─ src-tauri/
    ├─ src/
-   │  ├─ main.rs             # entry point, commands, window and hotkey
-   │  ├─ config.rs           # config.json: load, save, upgrade
+   │  ├─ main.rs             # entry point, commands, window, tray and hotkey
+   │  ├─ config.rs           # config.json: load, save, defaults
    │  ├─ converter/          # conversion registry and image conversion
-   │  └─ search_engine/      # crawler, database, search, watcher, reconcile
+   │  └─ search_engine/      # apps, crawler, database, paths, reconcile, search, watcher
    ├─ capabilities/          # Tauri permissions
    └─ tauri.conf.json
 ```
@@ -263,7 +237,8 @@ WayFinder/
 
 Ideas being explored, with no promises or dates:
 
-- `app:` to launch installed programs from the Start Menu
+- Microsoft Store apps and app icons in `app:`
+- Dragging several files at once
 - `spo:` to jump into Spotify
 - Themes
 - Editing settings inside the app
@@ -276,21 +251,19 @@ Contributions and ideas are welcome. Please open an issue first for anything lar
 
 - Branches: `main` is release-only. Day-to-day work happens on `updates`, and bigger changes go on `feature/<short-name>`. Open pull requests against `updates`.
 - Keep each commit to one logical change, with a plain-English one-line message that says what changed and why.
-- Before opening a pull request, run `cargo check` and `cargo clippy` in `src-tauri/`, and try the affected command by hand.
+- Before opening a pull request, run `cargo check`, `cargo clippy` and `cargo test` in `src-tauri/`, and try the affected command by hand.
+- See [CHANGELOG.md](CHANGELOG.md) for what changed in each version.
 
 <!-- TODO: link your docs folder or CONTRIBUTING.md here if you add one -->
 
 ## License
 
-<<<<<<< HEAD
-Released under the [MIT License](https://claude.ai/chat/LICENSE).
-=======
 Released under the [MIT License](LICENSE).
->>>>>>> a8854fe41eca97edf4288a914c78565dc5fba808
 
 ## Credits
 
-- [Tauri](https://tauri.app/), the app framework
+- [Tauri](https://tauri.app/), the app framework, and its plugins
+- [tauri-plugin-drag](https://github.com/crabnebula-dev/drag-rs) by CrabNebula, for dragging files out of the launcher
 - [SQLite](https://www.sqlite.org/) through [rusqlite](https://github.com/rusqlite/rusqlite)
 - [walkdir](https://github.com/BurntSushi/walkdir), [notify](https://github.com/notify-rs/notify), [fuzzy-matcher](https://github.com/lotabout/fuzzy-matcher) and [image](https://github.com/image-rs/image)
 - Fonts: [Silkscreen](https://fonts.google.com/specimen/Silkscreen) and [VT323](https://fonts.google.com/specimen/VT323), both under the SIL Open Font License
@@ -301,8 +274,4 @@ Released under the [MIT License](LICENSE).
 
 Made with care. If WayFinder saves you a few seconds a day, a star on the repo is much appreciated.
 
-<<<<<<< HEAD
 </div>
-=======
-</div>
->>>>>>> a8854fe41eca97edf4288a914c78565dc5fba808
