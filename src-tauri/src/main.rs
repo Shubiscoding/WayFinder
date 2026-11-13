@@ -36,13 +36,15 @@ use tauri_plugin_opener::OpenerExt;
 /// Guard used by hide-on-blur: ignores blur events fired within 150 ms of show.
 struct LastShown(Arc<Mutex<Instant>>);
 
+/// True while a native drag-out operation is active so hide-on-blur does not
+/// hide the launcher window (which would cancel the OS drag).
+struct DragActive(Arc<AtomicBool>);
+
 /// Single unified launcher activation path.
 /// Records last_shown timestamp, unhides window, requests OS focus, and notifies frontend.
 pub fn show_launcher(app: &tauri::AppHandle) {
     if let Some(state) = app.try_state::<LastShown>() {
-        if let Ok(mut t) = state.0.lock() {
-            *t = Instant::now();
-        }
+        let _ = state.0.lock().map(|mut t| *t = Instant::now());
     }
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -65,6 +67,49 @@ struct AppConfig(Config);
 /// Set to true when the first crawl (or startup reconcile) has finished.
 struct CrawlDone(Arc<AtomicBool>);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum SyncPhase {
+    Waiting,
+    Crawling,
+    Reconciling,
+    Ready,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SyncStatus {
+    pub phase: SyncPhase,
+    pub processed: u64,
+    pub total: Option<u64>,
+    pub elapsed_ms: u64,
+    pub wait_remaining_s: Option<u32>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SyncProgressEvent {
+    pub phase: SyncPhase,
+    pub processed: u64,
+    pub total: Option<u64>,
+    pub elapsed_ms: u64,
+    pub wait_remaining_s: Option<u32>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SyncCompleteEvent {
+    pub elapsed_ms: u64,
+    pub error: Option<String>,
+}
+
+pub struct SyncStateInner {
+    pub phase: SyncPhase,
+    pub processed: u64,
+    pub total: Option<u64>,
+    pub started_at: Option<Instant>,
+    pub wait_remaining_s: Option<u32>,
+}
+
+#[derive(Clone)]
+pub struct SyncState(pub Arc<Mutex<SyncStateInner>>);
+
 /// A one-shot message the frontend shows in the error box at startup.
 struct StartupWarning(Mutex<Option<String>>);
 
@@ -77,6 +122,26 @@ struct IndexStatus {
 // ---------------------------------------------------------------------------
 // Tauri commands (called from JS with `invoke`)
 // ---------------------------------------------------------------------------
+
+/// Returns a snapshot of the current startup sync progress / state (Phase 5.6).
+#[tauri::command(async)]
+fn sync_status(sync: State<'_, SyncState>) -> Result<SyncStatus, String> {
+    let state = sync
+        .0
+        .lock()
+        .map_err(|e| format!("Could not read sync state: {e}"))?;
+    let elapsed_ms = state
+        .started_at
+        .map(|t| t.elapsed().as_millis() as u64)
+        .unwrap_or(0);
+    Ok(SyncStatus {
+        phase: state.phase,
+        processed: state.processed,
+        total: state.total,
+        elapsed_ms,
+        wait_remaining_s: state.wait_remaining_s,
+    })
+}
 
 /// Search for files matching `query`. Returns up to 5 ranked results.
 #[tauri::command(async)]
@@ -102,6 +167,57 @@ fn search_folders(
         .lock()
         .map_err(|e| format!("The file index is busy, try again: {e}"))?;
     search::search_folders(&conn, &query)
+}
+
+/// Search for installed desktop applications matching `query`. Returns up to 5 ranked results.
+#[tauri::command(async)]
+fn search_apps(
+    query: String,
+    db: State<'_, Db>,
+) -> Result<Vec<search_engine::apps::AppHit>, String> {
+    let conn = db
+        .0
+        .lock()
+        .map_err(|e| format!("The file index is busy, try again: {e}"))?;
+    search_engine::apps::search_apps(&conn, &query)
+}
+
+/// Launch an installed desktop application by its ID.
+/// Looks up the path in the database, verifies existence, opens via ShellExecuteW,
+/// records usage count for ranking, and hides the launcher window.
+#[tauri::command(async)]
+fn launch_app(
+    id: i64,
+    app: tauri::AppHandle,
+    db: State<'_, Db>,
+) -> Result<(), String> {
+    let (name, path) = {
+        let conn = db
+            .0
+            .lock()
+            .map_err(|e| format!("The file index is busy, try again: {e}"))?;
+        search_engine::apps::prepare_launch(&conn, id)?
+    };
+
+    app.opener()
+        .open_path(path.clone(), None::<&str>)
+        .map_err(|e| {
+            format!(
+                "Windows could not launch \"{name}\": {e}. Check that the shortcut target still exists."
+            )
+        })?;
+
+    // Record usage count for future ranking
+    if let Ok(conn) = db.0.lock() {
+        let _ = search_engine::apps::record_app_usage(&conn, id);
+    }
+
+    // Hide the launcher window after a successful launch
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.hide();
+    }
+
+    Ok(())
 }
 
 #[tauri::command(async)]
@@ -133,6 +249,49 @@ fn hide_window(window: tauri::WebviewWindow) -> Result<(), String> {
         .map_err(|e| format!("Could not hide the launcher window: {e}"))
 }
 
+const DRAG_ICON_BYTES: &[u8] = include_bytes!("../icons/32x32.png");
+
+#[derive(serde::Serialize)]
+struct DragCheck {
+    path: String,
+    icon: &'static [u8],
+}
+
+/// Ensure `path` is present in `conn` before opening or dragging it.
+fn ensure_indexed_conn(conn: &Connection, path: &str, action: &str) -> Result<(), String> {
+    if !search_engine::database::is_indexed(conn, path) {
+        return Err(format!(
+            "\"{path}\" is not in the file index, so WayFinder will not {action} it."
+        ));
+    }
+    Ok(())
+}
+
+/// Ensure `path` is present in the SQLite index before opening or dragging it.
+fn ensure_indexed(db: &State<'_, Db>, path: &str, action: &str) -> Result<(), String> {
+    let conn = db
+        .0
+        .lock()
+        .map_err(|e| format!("The file index is busy, try again: {e}"))?;
+    ensure_indexed_conn(&conn, path, action)
+}
+
+/// Verify that `path` still exists on disk before starting a drag.
+fn verify_drag_path_on_disk(path: &str) -> Result<(), String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(format!(
+            "WayFinder could not drag \"{path}\" because the item no longer exists on disk. Search again to refresh your results."
+        )),
+        Err(e) => {
+            log::warn!("[drag] Could not access \"{path}\": {e}");
+            Err(format!(
+                "WayFinder could not access \"{path}\" to start a drag. Check that you have permission to read it and that the drive is available."
+            ))
+        }
+    }
+}
+
 /// Open a file or folder with its default app (same as double-clicking it).
 ///
 /// SECURITY: only opens paths verified to exist in the SQLite index, preventing
@@ -140,17 +299,7 @@ fn hide_window(window: tauri::WebviewWindow) -> Result<(), String> {
 /// ShellExecuteW without shell text parsing.
 #[tauri::command(async)]
 fn open_path(app: tauri::AppHandle, db: State<'_, Db>, path: String) -> Result<(), String> {
-    {
-        let conn = db
-            .0
-            .lock()
-            .map_err(|e| format!("The file index is busy, try again: {e}"))?;
-        if !search_engine::database::is_indexed(&conn, &path) {
-            return Err(format!(
-                "\"{path}\" is not in the file index, so WayFinder will not open it."
-            ));
-        }
-    } // lock released before launching
+    ensure_indexed(&db, &path, "open")?;
 
     app.opener()
         .open_path(path.clone(), None::<&str>)
@@ -160,6 +309,40 @@ fn open_path(app: tauri::AppHandle, db: State<'_, Db>, path: String) -> Result<(
                  Check that it still exists and that you can open it."
             )
         })
+}
+
+/// Verify that `path` is indexed and still exists on disk before starting an
+/// OS drag-out copy operation, and supply the embedded preview icon bytes.
+#[tauri::command(async)]
+fn check_drag_path(db: State<'_, Db>, path: String) -> Result<DragCheck, String> {
+    ensure_indexed(&db, &path, "drag")?;
+    verify_drag_path_on_disk(&path)?;
+    Ok(DragCheck {
+        path,
+        icon: DRAG_ICON_BYTES,
+    })
+}
+
+/// Track whether a native OS drag operation is active so `hide_on_blur` does not
+/// hide the launcher mid-drag. When ending a cancelled drag (`refocus = true`),
+/// refreshes the blur grace timer and restores focus so the launcher stays open.
+#[tauri::command]
+fn set_drag_active(
+    active: bool,
+    refocus: Option<bool>,
+    drag_active: State<'_, DragActive>,
+    last_shown: State<'_, LastShown>,
+    app: tauri::AppHandle,
+) {
+    drag_active.0.store(active, Ordering::Release);
+    if !active && refocus.unwrap_or(false) {
+        if let Ok(mut t) = last_shown.0.lock() {
+            *t = Instant::now();
+        }
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.set_focus();
+        }
+    }
 }
 
 #[tauri::command]
@@ -172,20 +355,38 @@ fn open_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
         .map_err(|e| format!("Could not open your web browser: {e}"))
 }
 
-/// Convert a file from one format to another using the converter registry (Phase 4).
+/// Search for files matching `query` whose extensions can be converted.
+#[tauri::command(async)]
+fn search_convertible(
+    query: String,
+    db: State<'_, Db>,
+) -> Result<Vec<search::SearchHit>, String> {
+    let conn = db
+        .0
+        .lock()
+        .map_err(|e| format!("The file index is busy, try again: {e}"))?;
+    let allowed = converter::registry::supported_source_extensions();
+    search::search_convertible(&conn, &query, allowed)
+}
+
+/// Supported target extensions for a given source extension.
+#[tauri::command]
+fn conversion_targets(ext: String) -> Vec<String> {
+    converter::registry::conversion_targets(&ext)
+        .into_iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// Convert a file from one format to another using the converter registry (Phase 4 / con: rework).
 ///
-/// Runs off the UI thread and releases the database lock before performing encoding.
+/// Runs off the UI thread without holding the database lock.
 #[tauri::command(async)]
 fn convert_file(
-    source: String,
-    target_ext: String,
-    db: State<'_, Db>,
+    source_path: String,
+    target_name: String,
 ) -> Result<converter::ConversionResult, String> {
-    let source_path = {
-        let guard = db.0.lock().ok();
-        converter::resolve_source(&source, guard.as_deref())?
-    };
-    converter::convert_resolved(&source_path, &target_ext)
+    converter::convert_file(&source_path, &target_name)
 }
 
 /// Terminate the application process cleanly, closing all windows and child processes.
@@ -260,6 +461,8 @@ fn main() {
         Instant::now() - std::time::Duration::from_secs(1),
     ));
     let last_shown_blur = Arc::clone(&last_shown);
+    let drag_active = Arc::new(AtomicBool::new(false));
+    let drag_active_blur = Arc::clone(&drag_active);
 
     tauri::Builder::default()
         // Single instance plugin must be registered FIRST (Phase 5.5.3).
@@ -278,7 +481,9 @@ fn main() {
             Some(vec!["--autostart"]),
         ))
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_drag::init())
         .manage(LastShown(last_shown))
+        .manage(DragActive(drag_active))
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, _shortcut, event| {
@@ -378,7 +583,8 @@ fn main() {
             }
             let is_autostart_launch = std::env::args().any(|arg| arg == "--autostart");
 
-            let exclude_dirs = cfg.exclude_dirs.clone();
+            let filters = crawler::Filters::from_config(&cfg);
+            let fallback_interval_secs = cfg.fallback_interval_secs;
             let index_roots = config::resolved_roots(&cfg);
             // Stash hide_on_blur before cfg is moved into AppConfig.
             let hide_on_blur = cfg.hide_on_blur;
@@ -417,6 +623,11 @@ fn main() {
                 if let Some(win) = app.get_webview_window("main") {
                     win.on_window_event(move |event| {
                         if let tauri::WindowEvent::Focused(false) = event {
+                            if drag_active_blur.load(Ordering::Acquire) {
+                                // Keep the launcher visible while an OS drag-out
+                                // loop is active; hiding the window cancels it.
+                                return;
+                            }
                             let elapsed = ls
                                 .lock()
                                 .map(|t| t.elapsed())
@@ -426,55 +637,272 @@ fn main() {
                                 return;
                             }
                             if let Some(w) = app_h.get_webview_window("main") {
-                                if let Err(e) = w.hide() {
+                                let _ = w.hide().map_err(|e| {
                                     log::error!(
                                         "[main] Could not hide window on focus loss: {e}"
                                     );
-                                }
+                                });
                             }
                         }
                     });
                 }
             }
 
-            // ── Background indexing, watching, and reconcile (Phase 5) ─────
+            // ── Background startup sync, watcher, and fallback (Phase 5.6) ──
+            let initial_phase = if is_autostart_launch {
+                SyncPhase::Waiting
+            } else if needs_crawl {
+                SyncPhase::Crawling
+            } else {
+                SyncPhase::Reconciling
+            };
+
+            let sync_state = SyncState(Arc::new(Mutex::new(SyncStateInner {
+                phase: initial_phase,
+                processed: 0,
+                total: None,
+                started_at: Some(Instant::now()),
+                wait_remaining_s: if is_autostart_launch { Some(30) } else { None },
+            })));
+            app.manage(sync_state.clone());
+
             let crawl_done = Arc::new(AtomicBool::new(!needs_crawl));
             app.manage(CrawlDone(Arc::clone(&crawl_done)));
 
             let db_path_bg = db_path.clone();
             let index_roots_bg = index_roots.clone();
-            let exclude_dirs_bg = exclude_dirs.clone();
+            let filters_bg = filters.clone();
+            let mut ignore_dirs_bg = vec![data_dir.clone()];
+            for extra_dir in [app.path().app_local_data_dir(), app.path().app_log_dir()] {
+                if let Ok(dir) = extra_dir
+                    && !ignore_dirs_bg.iter().any(|existing| existing == &dir)
+                {
+                    ignore_dirs_bg.push(dir);
+                }
+            }
             let done_bg = Arc::clone(&crawl_done);
+            let sync_bg = Arc::clone(&sync_state.0);
+            let app_h = app.handle().clone();
 
             std::thread::spawn(move || {
-                // When launched via OS autostart, delay background work to avoid disk contention.
+                let startup_instant = Instant::now();
+
+                // 1. When launched via OS autostart, wait 30 seconds before sync to avoid login disk thrash.
                 if is_autostart_launch {
-                    log::info!("[main] Launched via autostart; delaying background reconcile by 30 seconds.");
-                    std::thread::sleep(std::time::Duration::from_secs(30));
+                    log::info!("[main] Launched via autostart; delaying sync by 30 seconds.");
+                    for remaining in (1..=30).rev() {
+                        {
+                            if let Ok(mut st) = sync_bg.lock() {
+                                st.phase = SyncPhase::Waiting;
+                                st.wait_remaining_s = Some(remaining);
+                            }
+                        }
+                        let _ = app_h.emit(
+                            "sync-progress",
+                            SyncProgressEvent {
+                                phase: SyncPhase::Waiting,
+                                processed: 0,
+                                total: None,
+                                elapsed_ms: startup_instant.elapsed().as_millis() as u64,
+                                wait_remaining_s: Some(remaining),
+                            },
+                        );
+                        std::thread::sleep(std::time::Duration::from_secs(1));
+                    }
                 }
-                if needs_crawl {
-                    crawler::run_crawl(&db_path_bg, &index_roots_bg, &exclude_dirs_bg);
+
+                // 2. Run ONE startup sync: crawl if empty, otherwise reconcile.
+                let sync_start = Instant::now();
+                let phase = if needs_crawl {
+                    SyncPhase::Crawling
                 } else {
-                    reconcile::run_startup_reconcile(&db_path_bg, &index_roots_bg, &exclude_dirs_bg);
+                    SyncPhase::Reconciling
+                };
+
+                {
+                    if let Ok(mut st) = sync_bg.lock() {
+                        st.phase = phase;
+                        st.started_at = Some(sync_start);
+                        st.wait_remaining_s = None;
+                        st.processed = 0;
+                        st.total = None;
+                    }
+                }
+
+                let _ = app_h.emit(
+                    "sync-progress",
+                    SyncProgressEvent {
+                        phase,
+                        processed: 0,
+                        total: None,
+                        elapsed_ms: 0,
+                        wait_remaining_s: None,
+                    },
+                );
+
+                let last_emit = Arc::new(Mutex::new(
+                    Instant::now() - std::time::Duration::from_millis(300),
+                ));
+
+                let sync_result: Result<(), String> = if needs_crawl {
+                    let last_emit_crawl = Arc::clone(&last_emit);
+                    let app_h_crawl = app_h.clone();
+                    let sync_bg_crawl = Arc::clone(&sync_bg);
+                    crawler::run_crawl(
+                        &db_path_bg,
+                        &index_roots_bg,
+                        &filters_bg,
+                        move |processed| {
+                            let now = Instant::now();
+                            let should_emit = match last_emit_crawl.lock() {
+                                Ok(mut le) => {
+                                    if now.duration_since(*le)
+                                        >= std::time::Duration::from_millis(250)
+                                    {
+                                        *le = now;
+                                        true
+                                    } else {
+                                        false
+                                    }
+                                }
+                                Err(_) => false,
+                            };
+                            if should_emit {
+                                let elapsed_ms = sync_start.elapsed().as_millis() as u64;
+                                if let Ok(mut st) = sync_bg_crawl.lock() {
+                                    st.processed = processed;
+                                    st.total = None;
+                                }
+                                let _ = app_h_crawl.emit(
+                                    "sync-progress",
+                                    SyncProgressEvent {
+                                        phase: SyncPhase::Crawling,
+                                        processed,
+                                        total: None,
+                                        elapsed_ms,
+                                        wait_remaining_s: None,
+                                    },
+                                );
+                            }
+                        },
+                    )
+                } else {
+                    let last_emit_rec = Arc::clone(&last_emit);
+                    let app_h_rec = app_h.clone();
+                    let sync_bg_rec = Arc::clone(&sync_bg);
+                    reconcile::run_startup_reconcile(
+                        &db_path_bg,
+                        &index_roots_bg,
+                        &filters_bg,
+                        move |processed, total| {
+                            let now = Instant::now();
+                            let should_emit = match last_emit_rec.lock() {
+                                Ok(mut le) => {
+                                    if now.duration_since(*le)
+                                        >= std::time::Duration::from_millis(250)
+                                    {
+                                        *le = now;
+                                        true
+                                    } else {
+                                        false
+                                    }
+                                }
+                                Err(_) => false,
+                            };
+                            if should_emit {
+                                let elapsed_ms = sync_start.elapsed().as_millis() as u64;
+                                if let Ok(mut st) = sync_bg_rec.lock() {
+                                    st.processed = processed;
+                                    st.total = Some(total);
+                                }
+                                let _ = app_h_rec.emit(
+                                    "sync-progress",
+                                    SyncProgressEvent {
+                                        phase: SyncPhase::Reconciling,
+                                        processed,
+                                        total: Some(total),
+                                        elapsed_ms,
+                                        wait_remaining_s: None,
+                                    },
+                                );
+                            }
+                        },
+                    )
+                };
+
+                // Also sync installed Windows Start Menu apps (fast < 20ms, no extra progress phase).
+                let apps_sync_res = search_engine::apps::sync_apps_at(&db_path_bg);
+                if let Err(ref e) = apps_sync_res {
+                    log::error!("[sync] App discovery failed: {e}");
+                }
+
+                let total_elapsed_ms = sync_start.elapsed().as_millis() as u64;
+                let sync_error = match (sync_result, apps_sync_res) {
+                    (Ok(()), Ok(_)) => {
+                        log::info!(
+                            "[sync] Startup sync finished successfully in {total_elapsed_ms} ms."
+                        );
+                        None
+                    }
+                    (Err(e), _) => {
+                        log::error!("[sync] Startup sync failed: {e}");
+                        Some(e)
+                    }
+                    (Ok(()), Err(e)) => Some(e),
+                };
+
+                // Mark sync complete and state ready
+                {
+                    if let Ok(mut st) = sync_bg.lock() {
+                        st.phase = SyncPhase::Ready;
+                    }
                 }
                 done_bg.store(true, Ordering::Release);
+
+                let _ = app_h.emit(
+                    "sync-complete",
+                    SyncCompleteEvent {
+                        elapsed_ms: total_elapsed_ms,
+                        error: sync_error,
+                    },
+                );
+
+                // 3. Start real-time filesystem watcher strictly AFTER sync completes.
+                watcher::start_watcher(
+                    db_path_bg.clone(),
+                    index_roots_bg.clone(),
+                    ignore_dirs_bg,
+                    filters_bg.clone(),
+                );
+
+                // 4. Run one cheap fallback check to cover disk changes made between sync scan and watcher start.
+                reconcile::run_fallback_check(&db_path_bg, &index_roots_bg, &filters_bg);
+
+                // 5. Start the periodic configurable fallback loop (default 900s).
+                reconcile::start_fallback_loop(
+                    db_path_bg,
+                    index_roots_bg,
+                    filters_bg,
+                    fallback_interval_secs,
+                );
             });
-
-            // Real-time filesystem watcher with debouncing (Phase 5).
-            watcher::start_watcher(db_path.clone(), index_roots.clone(), exclude_dirs.clone());
-
-            // 3-minute lightweight periodic fallback check (Phase 5).
-            reconcile::start_fallback_loop(db_path, index_roots, exclude_dirs);
 
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             search_files,
             search_folders,
+            search_apps,
+            launch_app,
+            search_convertible,
+            conversion_targets,
             index_status,
+            sync_status,
             take_startup_warning,
             hide_window,
             open_path,
+            check_drag_path,
+            set_drag_active,
             open_url,
             convert_file,
             quit_app,
@@ -483,4 +911,72 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("WayFinder failed to start");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_drag_check_requires_indexed_existing_item_and_valid_png_icon() {
+        assert!(DRAG_ICON_BYTES.starts_with(b"\x89PNG\r\n\x1a\n"));
+
+        let temp_dir = std::env::temp_dir().join(format!("wf_test_drag_{}", std::process::id()));
+        let _ = fs::create_dir_all(&temp_dir);
+        let file_path = temp_dir.join("sample.txt");
+        let dir_path = temp_dir.join("sub_folder");
+        fs::write(&file_path, "hello").unwrap();
+        fs::create_dir_all(&dir_path).unwrap();
+
+        let db_path = temp_dir.join("drag_index.db");
+        let conn = database::open(&db_path).unwrap();
+        database::create_table(&conn).unwrap();
+
+        let file_str = file_path.to_string_lossy().to_string();
+        let dir_str = dir_path.to_string_lossy().to_string();
+
+        // Unindexed path must be rejected
+        let unindexed_err = ensure_indexed_conn(&conn, &file_str, "drag").unwrap_err();
+        assert!(unindexed_err.contains("not in the file index"));
+
+        // Insert file and folder into index
+        database::insert_entry(
+            &conn,
+            &database::FileEntry::new(
+                "sample.txt".to_string(),
+                &file_str,
+                Some("txt".to_string()),
+                false,
+                None,
+                None,
+            ),
+        )
+        .unwrap();
+        database::insert_entry(
+            &conn,
+            &database::FileEntry::new(
+                "sub_folder".to_string(),
+                &dir_str,
+                None,
+                true,
+                None,
+                None,
+            ),
+        )
+        .unwrap();
+
+        // Indexed existing file & folder pass
+        ensure_indexed_conn(&conn, &file_str, "drag").unwrap();
+        verify_drag_path_on_disk(&file_str).unwrap();
+        ensure_indexed_conn(&conn, &dir_str, "drag").unwrap();
+        verify_drag_path_on_disk(&dir_str).unwrap();
+
+        // Deleted file returns a plain-English error
+        fs::remove_file(&file_path).unwrap();
+        let missing_err = verify_drag_path_on_disk(&file_str).unwrap_err();
+        assert!(missing_err.contains("no longer exists on disk"));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
 }

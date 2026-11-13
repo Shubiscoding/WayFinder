@@ -46,6 +46,25 @@
         <button class="error-close" id="error-close" type="button">Close</button>
     </div>
 
+    <!-- Loading screen — shown by showLoading() in script.js. Hidden until called. -->
+    <div class="loading-box" id="loading-box" role="status" aria-live="polite"
+         aria-busy="true" aria-labelledby="loading-msg" tabindex="-1" hidden>
+        <div class="loading-content">
+            <div class="loading-blocks" aria-hidden="true">
+                <span style="--n:0"></span><span style="--n:1"></span>
+                <span style="--n:2"></span><span style="--n:3"></span>
+                <span style="--n:4"></span><span style="--n:5"></span>
+                <span style="--n:6"></span><span style="--n:7"></span>
+            </div>
+            <p class="loading-msg" id="loading-msg"></p>
+            <div class="loading-bar-wrap" id="loading-bar-wrap" hidden>
+                <div class="loading-bar" id="loading-bar"></div>
+            </div>
+            <p class="loading-detail" id="loading-detail" hidden></p>
+            <p class="loading-hint" id="loading-hint" hidden><b>esc</b> cancel</p>
+        </div>
+    </div>
+
     <!-- Settings modal — shown by openSettings() in script.js (Phase 5.5.5) -->
     <div class="settings-box" id="settings-box" role="dialog"
          aria-modal="true" aria-labelledby="settings-heading" tabindex="-1" hidden>

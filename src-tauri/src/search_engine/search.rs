@@ -43,6 +43,75 @@ pub fn search_folders(conn: &Connection, query: &str) -> Result<Vec<SearchHit>, 
     search_internal(conn, query, true)
 }
 
+/// Search for files (is_dir = 0) matching `query` whose extension is in `allowed_exts`.
+pub fn search_convertible(
+    conn: &Connection,
+    query: &str,
+    allowed_exts: &[&str],
+) -> Result<Vec<SearchHit>, String> {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() || allowed_exts.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let mut candidates = fetch_prefix_convertible(conn, &q, allowed_exts)?;
+
+    // If prefix yields fewer than MAX_RESULTS, scan for substring matches.
+    if candidates.len() < MAX_RESULTS {
+        for extra in fetch_contains_convertible(conn, &q, allowed_exts)? {
+            let already_have = candidates.iter().any(|c| c.path == extra.path);
+            if !already_have {
+                candidates.push(extra);
+            }
+        }
+    }
+
+    // If still fewer than MAX_RESULTS, fetch fuzzy candidates.
+    if candidates.len() < MAX_RESULTS && q.chars().count() >= 2 && q.chars().count() <= 12 {
+        for extra in fetch_fuzzy_convertible(conn, &q, allowed_exts)? {
+            let already_have = candidates.iter().any(|c| c.path == extra.path);
+            if !already_have {
+                candidates.push(extra);
+            }
+        }
+    }
+
+    let fuzzy_engine = SkimMatcherV2::default();
+
+    let mut scored: Vec<(i32, Candidate)> = candidates
+        .into_iter()
+        .filter_map(|c| {
+            let base_score = score_match(&c.name, &q, &fuzzy_engine);
+            if base_score > 0 {
+                let recency = recency_bonus(c.modified_at);
+                Some((base_score + recency, c))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // Best score first. On a tie the shorter name wins ("report.docx" before
+    // "report_final_v2_copy.docx").
+    scored.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then(a.1.name.len().cmp(&b.1.name.len()))
+    });
+
+    let hits: Vec<SearchHit> = scored
+        .into_iter()
+        .take(MAX_RESULTS)
+        .map(|(_, c)| SearchHit {
+            name: c.name,
+            path: c.path,
+            extension: c.extension,
+            is_dir: c.is_dir,
+        })
+        .collect();
+
+    Ok(hits)
+}
+
 // --- internal helpers ---
 
 struct Candidate {
@@ -205,6 +274,116 @@ fn fetch_fuzzy(conn: &Connection, q: &str, is_dir: bool) -> Result<Vec<Candidate
     Ok(found)
 }
 
+fn sql_in_clause(allowed_exts: &[&str]) -> String {
+    allowed_exts
+        .iter()
+        .map(|e| format!("'{}'", e.replace('\'', "''").to_lowercase()))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn fetch_prefix_convertible(
+    conn: &Connection,
+    q: &str,
+    allowed_exts: &[&str],
+) -> Result<Vec<Candidate>, String> {
+    if allowed_exts.is_empty() {
+        return Ok(vec![]);
+    }
+    let upper = format!("{q}\u{10FFFF}");
+    let in_clause = sql_in_clause(allowed_exts);
+
+    let sql = format!(
+        "SELECT name, path, extension, is_dir, modified_at
+         FROM files
+         WHERE is_dir = 0 AND LOWER(extension) IN ({in_clause})
+           AND name_lower >= ?1 AND name_lower < ?2
+         ORDER BY length(name_lower), name_lower
+         LIMIT ?3"
+    );
+
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| format!("Could not prepare the convertible file search: {e}"))?;
+
+    let rows = stmt
+        .query_map(params![q, upper, PREFIX_FETCH], row_to_candidate)
+        .map_err(|e| format!("Could not run the convertible file search: {e}"))?;
+
+    let found: Vec<Candidate> = rows.filter_map(|r| r.ok()).collect();
+    Ok(found)
+}
+
+fn fetch_contains_convertible(
+    conn: &Connection,
+    q: &str,
+    allowed_exts: &[&str],
+) -> Result<Vec<Candidate>, String> {
+    if allowed_exts.is_empty() {
+        return Ok(vec![]);
+    }
+    let pattern = format!("%{}%", escape_like(q));
+    let in_clause = sql_in_clause(allowed_exts);
+
+    let sql = format!(
+        "SELECT name, path, extension, is_dir, modified_at
+         FROM files
+         WHERE is_dir = 0 AND LOWER(extension) IN ({in_clause})
+           AND name_lower LIKE ?1 ESCAPE '\\'
+         ORDER BY modified_at DESC
+         LIMIT ?2"
+    );
+
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| format!("Could not prepare the convertible file search: {e}"))?;
+
+    let rows = stmt
+        .query_map(params![pattern, CONTAINS_FETCH], row_to_candidate)
+        .map_err(|e| format!("Could not run the convertible file search: {e}"))?;
+
+    let found: Vec<Candidate> = rows.filter_map(|r| r.ok()).collect();
+    Ok(found)
+}
+
+fn fetch_fuzzy_convertible(
+    conn: &Connection,
+    q: &str,
+    allowed_exts: &[&str],
+) -> Result<Vec<Candidate>, String> {
+    if allowed_exts.is_empty() {
+        return Ok(vec![]);
+    }
+    let pattern = format!(
+        "%{}%",
+        q.chars()
+            .map(|c| escape_like(&c.to_string()))
+            .collect::<Vec<_>>()
+            .join("%")
+    );
+    let in_clause = sql_in_clause(allowed_exts);
+
+    let sql = format!(
+        "SELECT name, path, extension, is_dir, modified_at
+         FROM files
+         WHERE is_dir = 0 AND LOWER(extension) IN ({in_clause})
+           AND name_lower LIKE ?1 ESCAPE '\\'
+         ORDER BY modified_at DESC
+         LIMIT ?2"
+    );
+
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| format!("Could not prepare fuzzy search: {e}"))?;
+
+    let rows = stmt
+        .query_map(params![pattern, FUZZY_FETCH], row_to_candidate)
+        .map_err(|e| format!("Could not run fuzzy search: {e}"))?;
+
+    let found: Vec<Candidate> = rows.filter_map(|r| r.ok()).collect();
+    Ok(found)
+}
+
 /// Make `%`, `_` and `\` in the user's text match literally in a LIKE query.
 fn escape_like(text: &str) -> String {
     text.replace('\\', "\\\\")
@@ -219,7 +398,7 @@ fn escape_like(text: &str) -> String {
 /// Word starts with: 70
 /// Contains: 60
 /// Fuzzy (SkimMatcherV2): 1-50
-fn score_match(name: &str, query: &str, fuzzy_engine: &SkimMatcherV2) -> i32 {
+pub fn score_match(name: &str, query: &str, fuzzy_engine: &SkimMatcherV2) -> i32 {
     let name_lower = name.to_lowercase();
 
     // Name without its extension, for the "exact without extension" tier.
@@ -274,4 +453,49 @@ fn recency_bonus(modified_at: Option<i64>) -> i32 {
         }
     }
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    #[test]
+    fn test_search_convertible_filters_extensions() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE files (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                name        TEXT NOT NULL,
+                name_lower  TEXT NOT NULL,
+                path        TEXT NOT NULL UNIQUE,
+                parent      TEXT,
+                extension   TEXT,
+                is_dir      INTEGER NOT NULL DEFAULT 0,
+                created_at  INTEGER,
+                modified_at INTEGER
+            );
+            CREATE INDEX idx_files_kind_name ON files (is_dir, name_lower);"
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO files (name, name_lower, path, extension, is_dir) VALUES
+             ('Lemon.jfif', 'lemon.jfif', 'C:/Pictures/Lemon.jfif', 'jfif', 0),
+             ('Lemon.txt', 'lemon.txt', 'C:/Documents/Lemon.txt', 'txt', 0),
+             ('Lemon.png', 'lemon.png', 'C:/Pictures/Lemon.png', 'png', 0),
+             ('Orange.png', 'orange.png', 'C:/Pictures/Orange.png', 'png', 0),
+             ('Folder Lemon', 'folder lemon', 'C:/Folder Lemon', NULL, 1);",
+            [],
+        ).unwrap();
+
+        let allowed = &["png", "jfif", "jpg"];
+        let hits = search_convertible(&conn, "lem", allowed).unwrap();
+
+        assert_eq!(hits.len(), 2);
+        let names: Vec<&str> = hits.iter().map(|h| h.name.as_str()).collect();
+        assert!(names.contains(&"Lemon.jfif"));
+        assert!(names.contains(&"Lemon.png"));
+        assert!(!names.contains(&"Lemon.txt")); // .txt must be excluded
+        assert!(!names.contains(&"Folder Lemon")); // directories must be excluded
+    }
 }
